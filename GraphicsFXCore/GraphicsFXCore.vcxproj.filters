@@ -1,0 +1,268 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{B3AF3A7F-9B23-4FC2-857C-16DE3B797C02}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx</Extensions>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{22A65A8A-2552-4E82-A4AB-9A55F2893213}</UniqueIdentifier>
+      <Extensions>h;hh;hpp;hxx</Extensions>
+    </Filter>
+    <Filter Include="Header Files\Window">
+      <UniqueIdentifier>{09D0E4C7-3AB6-46C6-92CE-01F6B5D77424}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\SceneObjects">
+      <UniqueIdentifier>{0D9878E3-F20D-47B3-B641-92DAB8E5408D}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Utilities">
+      <UniqueIdentifier>{F54CEEDB-6D34-4131-A46A-BB856B5241D0}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Window">
+      <UniqueIdentifier>{0C661BA9-68CB-47A9-8B01-D69643D9EAD6}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\SceneObjects">
+      <UniqueIdentifier>{B2115D31-4E0D-4C37-B09D-8D8E37E348D1}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Utilities">
+      <UniqueIdentifier>{5CC005FD-C63B-4C42-B443-0117B7459892}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Shaders">
+      <UniqueIdentifier>{71CE78BE-769B-4DF2-857C-E1D7D07311AA}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Asset">
+      <UniqueIdentifier>{04578C0F-66D6-4D3F-A51F-2462F43CEEF5}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Common">
+      <UniqueIdentifier>{17861e5b-457f-40ce-9f38-40ae79d424bc}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Common">
+      <UniqueIdentifier>{07ecf85d-1d4f-4f79-a0ba-60ab0a06b12f}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\GraphicsUtility.cpp">
+      <Filter>Source Files\Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="src\InputUtility.cpp">
+      <Filter>Source Files\Window</Filter>
+    </ClCompile>
+    <ClCompile Include="src\MultiViewUtility.cpp">
+      <Filter>Source Files\Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="src\OpenXRUtility.cpp">
+      <Filter>Source Files\Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="src\PathUtility.cpp">
+      <Filter>Source Files\Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="src\SceneObject.cpp">
+      <Filter>Source Files\SceneObjects</Filter>
+    </ClCompile>
+    <ClCompile Include="src\SetupUtility.cpp">
+      <Filter>Source Files\Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ShaderUtility.cpp">
+      <Filter>Source Files\Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="src\StringUtility.cpp">
+      <Filter>Source Files\Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="src\TextureUtility.cpp">
+      <Filter>Source Files\Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UIUtility.cpp">
+      <Filter>Source Files\Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="src\WindowsUtility.cpp">
+      <Filter>Source Files\Window</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Window.cpp">
+      <Filter>Source Files\Window</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Camera.cpp">
+      <Filter>Source Files\Common</Filter>
+    </ClCompile>
+    <ClCompile Include="src\EngineCore.cpp">
+      <Filter>Source Files\Common</Filter>
+    </ClCompile>
+    <ClCompile Include="src\GaussianSplatUtility.cpp">
+      <Filter>Source Files\Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="src\GaussianSplatStreamLoader.cpp">
+      <Filter>Source Files\Utilities</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\GraphicsUtility.h">
+      <Filter>Header Files\Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="src\InputUtility.h">
+      <Filter>Header Files\Window</Filter>
+    </ClInclude>
+    <ClInclude Include="src\MathUtility.h">
+      <Filter>Header Files\Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="src\MultiViewUtility.h">
+      <Filter>Header Files\Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="src\OpenXRUtility.h">
+      <Filter>Header Files\Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="src\PathUtility.h">
+      <Filter>Header Files\Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="src\SceneObject.h">
+      <Filter>Header Files\SceneObjects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\SceneObjectAxis.h">
+      <Filter>Header Files\SceneObjects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\SceneObjectBox.h">
+      <Filter>Header Files\SceneObjects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\SceneObjectGrid.h">
+      <Filter>Header Files\SceneObjects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\SceneObjectGridPlane.h">
+      <Filter>Header Files\SceneObjects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\SceneObjectPointCloud.h">
+      <Filter>Header Files\SceneObjects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\SceneObjectPyramid.h">
+      <Filter>Header Files\SceneObjects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\SceneObjectSphere.h">
+      <Filter>Header Files\SceneObjects</Filter>
+    </ClInclude>
+    <ClInclude Include="src\SetupUtility.h">
+      <Filter>Header Files\Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ShaderUtility.h">
+      <Filter>Header Files\Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="src\StringUtility.h">
+      <Filter>Header Files\Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="src\TextureUtility.h">
+      <Filter>Header Files\Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="src\UIUtility.h">
+      <Filter>Header Files\Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="src\WindowsUtility.h">
+      <Filter>Header Files\Window</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Window.h">
+      <Filter>Header Files\Window</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Camera.h">
+      <Filter>Header Files\Common</Filter>
+    </ClInclude>
+    <ClInclude Include="src\EngineCore.h">
+      <Filter>Header Files\Common</Filter>
+    </ClInclude>
+    <ClInclude Include="src\global.h">
+      <Filter>Header Files\Common</Filter>
+    </ClInclude>
+    <ClInclude Include="src\RenderTypes.h">
+      <Filter>Header Files\Common</Filter>
+    </ClInclude>
+    <ClInclude Include="src\SceneInterface.h">
+      <Filter>Header Files\Common</Filter>
+    </ClInclude>
+    <ClInclude Include="src\GaussianSplatUtility.h">
+      <Filter>Header Files\Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="src\GaussianSplatStreamLoader.h">
+      <Filter>Header Files\Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="src\SceneObjectGaussianSplat.h">
+      <Filter>Header Files\SceneObjects</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\Asset\checker_blue.png">
+      <Filter>Asset</Filter>
+    </None>
+    <None Include="..\Asset\checker_red.png">
+      <Filter>Asset</Filter>
+    </None>
+    <None Include="..\Asset\grid_yellow.png">
+      <Filter>Asset</Filter>
+    </None>
+    <None Include="..\Asset\normal_ridges.png">
+      <Filter>Asset</Filter>
+    </None>
+    <None Include="..\Asset\normal_soft.png">
+      <Filter>Asset</Filter>
+    </None>
+    <None Include="..\Asset\normal_tiles.png">
+      <Filter>Asset</Filter>
+    </None>
+    <None Include="..\Asset\normal_waves.png">
+      <Filter>Asset</Filter>
+    </None>
+    <None Include="..\Asset\stripes_green.png">
+      <Filter>Asset</Filter>
+    </None>
+    <None Include="..\Shaders\default.vert">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="..\Shaders\default.frag">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="..\Shaders\defaultInstanced.vert">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="..\Shaders\defaultLit.vert">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="..\Shaders\defaultLit.frag">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="..\Shaders\defaultLitInstanced.vert">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="..\Shaders\gaussianSplat.vert">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="..\Shaders\gaussianSplat.frag">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="..\Shaders\normalCapture.vert">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="..\Shaders\normalCapture.frag">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="..\Shaders\normalCaptureInstanced.vert">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="..\Shaders\pointCloud.vert">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="..\Shaders\pointCloud.frag">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="..\Shaders\shadowDepth.vert">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="..\Shaders\shadowDepthInstanced.vert">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="..\Shaders\ui.vert">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="..\Shaders\ui.frag">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="..\Shaders\xrDepthDebug.vert">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="..\Shaders\xrDepthDebug.frag">
+      <Filter>Shaders</Filter>
+    </None>
+  </ItemGroup>
+</Project>

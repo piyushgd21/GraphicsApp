@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{E7797049-EFE0-432C-9F5B-A4C091AE931D}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx</Extensions>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{E7519D3C-8023-402B-81C5-246F359F2933}</UniqueIdentifier>
+      <Extensions>h;hh;hpp;hxx</Extensions>
+    </Filter>
+    <Filter Include="Setup">
+      <UniqueIdentifier>{307DAD2B-8936-4B87-90DC-3E28D25DD3F6}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Docs">
+      <UniqueIdentifier>{16F584C0-86B6-4280-81D9-239066DC3EC1}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\WinMain.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Scene.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\Scene.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="setup\setup.ini">
+      <Filter>Setup</Filter>
+    </None>
+    <None Include="..\Documents\plans.md">
+      <Filter>Docs</Filter>
+    </None>
+    <None Include="..\Documents\CopilotInstructions.md">
+      <Filter>Docs</Filter>
+    </None>
+    <None Include="..\CMakeLists.txt">
+      <Filter>Docs</Filter>
+    </None>
+    <None Include="packages.config" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,159 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{9F51673A-281C-4527-BB7F-D437D2666385}</ProjectGuid>
+    <RootNamespace>GraphicsFXCore</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="Shared" />
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <OutDir>$(SolutionDir)bin\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(SolutionDir)build\GraphicsFXCore\$(Platform)\$(Configuration)\</IntDir>
+    <TargetName>GraphicsFXCore</TargetName>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <OutDir>$(SolutionDir)bin\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(SolutionDir)build\GraphicsFXCore\$(Platform)\$(Configuration)\</IntDir>
+    <TargetName>GraphicsFXCore</TargetName>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>_DEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(VULKAN_SDK)\Include;$(ProjectDir)..\packages\OpenXR.Headers.1.0.10.2\include;$(ProjectDir)src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <ConformanceMode>true</ConformanceMode>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(VULKAN_SDK)\Include;$(ProjectDir)..\packages\OpenXR.Headers.1.0.10.2\include;$(ProjectDir)src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <ConformanceMode>true</ConformanceMode>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="src\Camera.cpp" />
+    <ClCompile Include="src\EngineCore.cpp" />
+    <ClCompile Include="src\GaussianSplatStreamLoader.cpp" />
+    <ClCompile Include="src\GaussianSplatUtility.cpp" />
+    <ClCompile Include="src\GraphicsUtility.cpp" />
+    <ClCompile Include="src\InputUtility.cpp" />
+    <ClCompile Include="src\MultiViewUtility.cpp" />
+    <ClCompile Include="src\OpenXRUtility.cpp" />
+    <ClCompile Include="src\PathUtility.cpp" />
+    <ClCompile Include="src\SceneObject.cpp" />
+    <ClCompile Include="src\SetupUtility.cpp" />
+    <ClCompile Include="src\ShaderUtility.cpp" />
+    <ClCompile Include="src\StringUtility.cpp" />
+    <ClCompile Include="src\TextureUtility.cpp" />
+    <ClCompile Include="src\UIUtility.cpp" />
+    <ClCompile Include="src\WindowsUtility.cpp" />
+    <ClCompile Include="src\Window.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\Camera.h" />
+    <ClInclude Include="src\EngineCore.h" />
+    <ClInclude Include="src\GaussianSplatStreamLoader.h" />
+    <ClInclude Include="src\GaussianSplatUtility.h" />
+    <ClInclude Include="src\GraphicsUtility.h" />
+    <ClInclude Include="src\global.h" />
+    <ClInclude Include="src\InputUtility.h" />
+    <ClInclude Include="src\MathUtility.h" />
+    <ClInclude Include="src\MultiViewUtility.h" />
+    <ClInclude Include="src\OpenXRUtility.h" />
+    <ClInclude Include="src\PathUtility.h" />
+    <ClInclude Include="src\RenderTypes.h" />
+    <ClInclude Include="src\SceneInterface.h" />
+    <ClInclude Include="src\SceneObject.h" />
+    <ClInclude Include="src\SceneObjectAxis.h" />
+    <ClInclude Include="src\SceneObjectBox.h" />
+    <ClInclude Include="src\SceneObjectGrid.h" />
+    <ClInclude Include="src\SceneObjectGridPlane.h" />
+    <ClInclude Include="src\SceneObjectGaussianSplat.h" />
+    <ClInclude Include="src\SceneObjectPointCloud.h" />
+    <ClInclude Include="src\SceneObjectPyramid.h" />
+    <ClInclude Include="src\SceneObjectSphere.h" />
+    <ClInclude Include="src\SetupUtility.h" />
+    <ClInclude Include="src\ShaderUtility.h" />
+    <ClInclude Include="src\StringUtility.h" />
+    <ClInclude Include="src\TextureUtility.h" />
+    <ClInclude Include="src\UIUtility.h" />
+    <ClInclude Include="src\WindowsUtility.h" />
+    <ClInclude Include="src\Window.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\Asset\checker_blue.png" />
+    <None Include="..\Asset\checker_red.png" />
+    <None Include="..\Asset\grid_yellow.png" />
+    <None Include="..\Asset\normal_ridges.png" />
+    <None Include="..\Asset\normal_soft.png" />
+    <None Include="..\Asset\normal_tiles.png" />
+    <None Include="..\Asset\normal_waves.png" />
+    <None Include="..\Asset\stripes_green.png" />
+    <None Include="..\Shaders\default.vert" />
+    <None Include="..\Shaders\default.frag" />
+    <None Include="..\Shaders\defaultInstanced.vert" />
+    <None Include="..\Shaders\defaultLit.vert" />
+    <None Include="..\Shaders\defaultLit.frag" />
+    <None Include="..\Shaders\defaultLitInstanced.vert" />
+    <None Include="..\Shaders\gaussianSplat.vert" />
+    <None Include="..\Shaders\gaussianSplat.frag" />
+    <None Include="..\Shaders\normalCapture.vert" />
+    <None Include="..\Shaders\normalCapture.frag" />
+    <None Include="..\Shaders\normalCaptureInstanced.vert" />
+    <None Include="..\Shaders\pointCloud.vert" />
+    <None Include="..\Shaders\pointCloud.frag" />
+    <None Include="..\Shaders\shadowDepth.vert" />
+    <None Include="..\Shaders\shadowDepthInstanced.vert" />
+    <None Include="..\Shaders\ui.vert" />
+    <None Include="..\Shaders\ui.frag" />
+    <None Include="..\Shaders\xrDepthDebug.vert" />
+    <None Include="..\Shaders\xrDepthDebug.frag" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets" />
+</Project>
