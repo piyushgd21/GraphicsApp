@@ -190,6 +190,19 @@ namespace graphicsFX
         Float4 m_cameraColor{ 0.1f, 0.6f, 1.0f, 1.0f }; //Stores the camera marker color.
         bool m_showCameraLabels{ false }; //Stores whether camera id labels are shown.
         std::string m_coordinateMode{ "ColmapToApp" }; //Stores the coordinate conversion mode.
+
+        bool m_planeSweepDebugEnabled{ false };
+
+        int m_planeSweepDebugReferenceImageId{ 0 };
+
+        int m_planeSweepDebugPixelX{ 0 };
+        int m_planeSweepDebugPixelY{ 0 };
+
+        bool m_planeSweepDebugSaveEveryPlane{ true };
+        // Debug-only: enable COLMAP anchor point diagnostic experiment when plane sweep debug is enabled
+        bool m_planeSweepDebugColmapAnchorEnabled{ false };
+        // Debug-only: maximum pixel search radius when finding nearest COLMAP observation to requested debug pixel
+        int m_planeSweepDebugColmapAnchorMaxPixelDistance{ 20 };
     };
 
     //Stores Gaussian splat visualization settings.

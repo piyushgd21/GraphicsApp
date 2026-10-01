@@ -38,6 +38,25 @@
 
 namespace graphicsFX
 {
+        // Debug run context used by ComputePlaneCost instrumentation.
+        struct DebugRunContext
+        {
+            bool enabled{ false };
+            int refImageId{ -1 };
+            int pixelX{ 0 };
+            int pixelY{ 0 };
+            int currentPlaneIndex{ -1 };
+            float currentDepth{ 0.0f };
+            int minValidSourceViews{ 0 };
+            std::ofstream detailedCsv;
+            int lastPlaneValidSources{ 0 };
+            bool lastPlaneHasCost{ false };
+            float lastPlaneAvgCost{ 0.0f };
+        };
+
+        // Global debug context instance used by DebugPixelSweep and ComputePlaneCost.
+        static DebugRunContext g_debugContext;
+
         //Returns a line with comments removed.
         std::string MultiViewUtility::MultiViewCameraUtility::RemoveComment(const std::string &line)
         {
@@ -61,6 +80,202 @@ namespace graphicsFX
             }
 
             return line.substr(0, comment);
+        }
+
+        //Debug-only: loads COLMAP points3D.txt and images.txt observations (preserves per-image 2D obs).
+        ColmapPointsDebugReadResult MultiViewUtility::LoadColmapPointsWithObservations(const ColmapSetup &setup)
+        {
+            ColmapPointsDebugReadResult result;
+            if (!setup.m_enabled || setup.m_cameraPointsFile.empty() || setup.m_cameraExtrinsicFile.empty())
+            {
+                return result;
+            }
+
+            // First parse points3D.txt to get XYZ and reprojection error.
+            const std::filesystem::path pointsPath = PathUtility::ResolvePath(setup.m_cameraPointsFile);
+            std::ifstream pointsFile(pointsPath);
+            if (!pointsFile.is_open())
+            {
+                return result;
+            }
+
+            std::string line;
+            while (std::getline(pointsFile, line))
+            {
+                const std::vector<std::string> tokens = MultiViewUtility::MultiViewSparsePointCloudUtility::SplitTokens(line);
+                if (tokens.size() < 8U)
+                {
+                    continue;
+                }
+
+                // tokens: POINT3D_ID X Y Z R G B ERROR TRACK...
+                int64_t pointId = -1;
+                try
+                {
+                    pointId = std::stoll(tokens[0]);
+                }
+                catch (const std::exception &)
+                {
+                    continue;
+                }
+
+                double x = 0.0, y = 0.0, z = 0.0, err = 0.0;
+                if (!MultiViewUtility::MultiViewSparsePointCloudUtility::ParseDouble(tokens[1], x) ||
+                    !MultiViewUtility::MultiViewSparsePointCloudUtility::ParseDouble(tokens[2], y) ||
+                    !MultiViewUtility::MultiViewSparsePointCloudUtility::ParseDouble(tokens[3], z) ||
+                    !MultiViewUtility::MultiViewSparsePointCloudUtility::ParseDouble(tokens[7], err))
+                {
+                    continue;
+                }
+
+                ColmapPoint3DDebug point;
+                point.m_pointId = pointId;
+                const Float3 colmapPosition{ static_cast<float>(x), static_cast<float>(y), static_cast<float>(z) };
+                point.m_position = MultiViewUtility::MultiViewSparsePointCloudUtility::ConvertCoordinate(colmapPosition, setup.m_coordinateMode) * setup.m_positionScale;
+                point.m_error = err;
+                result.m_pointsById[pointId] = std::move(point);
+            }
+
+            // Next parse images.txt to extract per-image 2D observations (x y POINT3D_ID triples per image)
+            const std::filesystem::path imagesPath = PathUtility::ResolvePath(setup.m_cameraExtrinsicFile);
+            std::ifstream imagesFile(imagesPath);
+            if (!imagesFile.is_open())
+            {
+                return result;
+            }
+
+            bool skipPointObservationLine = false;
+            while (std::getline(imagesFile, line))
+            {
+                if (skipPointObservationLine)
+                {
+                    skipPointObservationLine = false;
+                    // This line contains point observations for the last parsed pose.
+                    // But we need to have stored the last pose image id; however we parse pose and then read this line inside the same loop below.
+                    continue;
+                }
+
+                const std::vector<std::string> tokens = MultiViewUtility::MultiViewCameraUtility::SplitTokens(line);
+                if (tokens.empty())
+                {
+                    continue;
+                }
+
+                MultiViewUtility::MultiViewCameraUtility::RawColmapPose pose;
+                if (MultiViewUtility::MultiViewCameraUtility::TryParseImagePoseLine(tokens, pose))
+                {
+                    // read following observation line (if present)
+                    std::string obsLine;
+                    if (!std::getline(imagesFile, obsLine))
+                    {
+                        continue;
+                    }
+
+                    const std::vector<std::string> obsTokens = MultiViewUtility::MultiViewCameraUtility::SplitTokens(obsLine);
+                    // obsTokens repeated triples: x y POINT3D_ID
+                    uint32_t point2dIdx = 0U;
+                    for (std::size_t i = 0U; i + 2U < obsTokens.size(); i += 3U)
+                    {
+                        double ox = 0.0, oy = 0.0;
+                        int64_t pid = -1;
+                        if (!MultiViewUtility::MultiViewSparsePointCloudUtility::ParseDouble(obsTokens[i], ox) ||
+                            !MultiViewUtility::MultiViewSparsePointCloudUtility::ParseDouble(obsTokens[i + 1U], oy))
+                        {
+                            ++point2dIdx;
+                            continue;
+                        }
+
+                        try
+                        {
+                            pid = std::stoll(obsTokens[i + 2U]);
+                        }
+                        catch (const std::exception &)
+                        {
+                            ++point2dIdx;
+                            continue;
+                        }
+
+                        if (pid == -1) { ++point2dIdx; continue; }
+
+                        const uint32_t imageId = pose.m_imageId;
+                        ColmapPointObservation obs;
+                        obs.m_imageId = imageId;
+                        obs.m_point2dIdx = point2dIdx;
+                        obs.m_x = static_cast<float>(ox);
+                        obs.m_y = static_cast<float>(oy);
+
+                        // add to per-image map
+                        result.m_imageObservations[imageId].push_back(obs);
+
+                        // add to point record if known
+                        const auto it = result.m_pointsById.find(pid);
+                        if (it != result.m_pointsById.end())
+                        {
+                            it->second.m_observations.push_back(obs);
+                        }
+
+                        ++point2dIdx;
+                    }
+
+                    continue;
+                }
+
+                // Try compact pose
+                if (MultiViewUtility::MultiViewCameraUtility::TryParseCompactPoseLine(tokens, pose))
+                {
+                    // read following observation line (if present)
+                    std::string obsLine;
+                    if (!std::getline(imagesFile, obsLine))
+                    {
+                        continue;
+                    }
+
+                    const std::vector<std::string> obsTokens = MultiViewUtility::MultiViewCameraUtility::SplitTokens(obsLine);
+                    uint32_t point2dIdx = 0U;
+                    for (std::size_t i = 0U; i + 2U < obsTokens.size(); i += 3U)
+                    {
+                        double ox = 0.0, oy = 0.0;
+                        int64_t pid = -1;
+                        if (!MultiViewUtility::MultiViewSparsePointCloudUtility::ParseDouble(obsTokens[i], ox) ||
+                            !MultiViewUtility::MultiViewSparsePointCloudUtility::ParseDouble(obsTokens[i + 1U], oy))
+                        {
+                            ++point2dIdx;
+                            continue;
+                        }
+
+                        try
+                        {
+                            pid = std::stoll(obsTokens[i + 2U]);
+                        }
+                        catch (const std::exception &)
+                        {
+                            ++point2dIdx;
+                            continue;
+                        }
+
+                        if (pid == -1) { ++point2dIdx; continue; }
+
+                        const uint32_t imageId = pose.m_imageId;
+                        ColmapPointObservation obs;
+                        obs.m_imageId = imageId;
+                        obs.m_point2dIdx = point2dIdx;
+                        obs.m_x = static_cast<float>(ox);
+                        obs.m_y = static_cast<float>(oy);
+
+                        result.m_imageObservations[imageId].push_back(obs);
+                        const auto it = result.m_pointsById.find(pid);
+                        if (it != result.m_pointsById.end())
+                        {
+                            it->second.m_observations.push_back(obs);
+                        }
+                        ++point2dIdx;
+                    }
+
+                    continue;
+                }
+            }
+
+            return result;
         }
 
         //Splits one text line into whitespace tokens.
@@ -1850,10 +2065,26 @@ namespace graphicsFX
             const int patchArea = patchWidth * patchWidth;
             const int minimumOpaqueSamples = std::max(1, static_cast<int>(std::ceil(static_cast<float>(patchArea) * minimumOpaquePatchRatio)));
 
+            // Check whether instrumentation is active for this reference pixel
+            const bool instrument = g_debugContext.enabled && g_debugContext.refImageId == static_cast<int>(referenceImage.m_camera.m_imageId) &&
+                static_cast<int>(std::lround(x)) == g_debugContext.pixelX && static_cast<int>(std::lround(y)) == g_debugContext.pixelY;
+
             for (const PlaneSweepImage &sourceImage : sourceImages)
             {
                 float sourceCost = 0.0f;
                 int sampleCount = 0;
+
+                // instrumentation counters
+                int patchSamplesConsidered = 0;
+                int patchSamplesReferenceOpaque = 0;
+                int patchSamplesProjSuccess = 0;
+                int patchSamplesProjFailures = 0;
+                int patchSamplesProjOutside = 0;
+                int patchSamplesSourceMaskRejected = 0;
+                int patchSamplesSourceOpaque = 0;
+                bool sourceContributed = false;
+                float sourceIndividualCost = 0.0f;
+                std::string rejectionReason = "";
 
                 for (int patchY = -patchRadius; patchY <= patchRadius; ++patchY)
                 {
@@ -1863,10 +2094,12 @@ namespace graphicsFX
                         const float referenceY = y + static_cast<float>(patchY);
 
                         Float4 referenceColor;
+                        ++patchSamplesConsidered;
                         if (!SamplePlaneSweepPixel(referenceImage, referenceX, referenceY, referenceColor) || referenceColor.w <= alphaThreshold)
                         {
                             continue;
                         }
+                        ++patchSamplesReferenceOpaque;
 
                         const Float3 point = UnprojectPixel(referenceImage.m_camera, referenceImage.m_intrinsic, referenceX, referenceY, depth);
                         float sourceX = 0.0f;
@@ -1874,16 +2107,31 @@ namespace graphicsFX
                         float sourceDepth = 0.0f;
                         if (!ProjectPoint(sourceImage.m_camera, sourceImage.m_intrinsic, point, sourceX, sourceY, sourceDepth))
                         {
+                            ++patchSamplesProjFailures;
                             continue;
                         }
+
+                        // Check whether the projected coordinate falls inside the source image bounds
+                        const bool projInside = sourceX >= 0.0f && sourceY >= 0.0f && sourceX < static_cast<float>(sourceImage.m_texture.m_width) && sourceY < static_cast<float>(sourceImage.m_texture.m_height);
+                        if (!projInside)
+                        {
+                            ++patchSamplesProjOutside;
+                            continue;
+                        }
+
+                        ++patchSamplesProjSuccess;
 
                         Float4 sourceColor;
                         if (!SamplePlaneSweepPixel(sourceImage, sourceX, sourceY, sourceColor) || sourceColor.w <= alphaThreshold)
                         {
+                            ++patchSamplesSourceMaskRejected;
                             continue;
                         }
 
-                        sourceCost += (std::fabs(referenceColor.x - sourceColor.x) + std::fabs(referenceColor.y - sourceColor.y) + std::fabs(referenceColor.z - sourceColor.z)) / 3.0f;
+                        ++patchSamplesSourceOpaque;
+
+                        const float delta = (std::fabs(referenceColor.x - sourceColor.x) + std::fabs(referenceColor.y - sourceColor.y) + std::fabs(referenceColor.z - sourceColor.z)) / 3.0f;
+                        sourceCost += delta;
                         ++sampleCount;
                     }
                 }
@@ -1892,16 +2140,82 @@ namespace graphicsFX
                 {
                     totalCost += sourceCost / static_cast<float>(sampleCount);
                     ++validSourceViews;
+                    sourceContributed = true;
+                    sourceIndividualCost = sourceCost / static_cast<float>(sampleCount);
                 }
+                else
+                {
+                    // Determine rejection reason using observed counters
+                    if (patchSamplesProjSuccess == 0)
+                    {
+                        rejectionReason = "projectionFailed";
+                    }
+                    else
+                    {
+                        rejectionReason = "insufficientOpaqueSamples";
+                    }
+                }
+
+                // If instrumentation is enabled, write per-source diagnostics
+                if (instrument && g_debugContext.detailedCsv.is_open())
+                {
+                    const int srcId = static_cast<int>(sourceImage.m_camera.m_imageId);
+                    const std::string srcName = sourceImage.m_camera.m_name.empty() ? ("image_" + std::to_string(srcId)) : sourceImage.m_camera.m_name;
+                    // compute projected center for summary
+                    float centerPX = 0.0f, centerPY = 0.0f, centerPDepth = 0.0f;
+                    const bool centerProj = ProjectPoint(sourceImage.m_camera, sourceImage.m_intrinsic, UnprojectPixel(referenceImage.m_camera, referenceImage.m_intrinsic, x, y, depth), centerPX, centerPY, centerPDepth);
+                    const bool centerInside = centerProj && centerPX >= 0.0f && centerPY >= 0.0f && centerPX < static_cast<float>(sourceImage.m_texture.m_width) && centerPY < static_cast<float>(sourceImage.m_texture.m_height);
+                    // reference patch validity and required counts
+                    const int refRequiredOpaque = minimumOpaqueSamples;
+                    const bool refPatchValid = patchSamplesReferenceOpaque >= refRequiredOpaque;
+
+                    g_debugContext.detailedCsv << g_debugContext.currentPlaneIndex << ",";
+                    g_debugContext.detailedCsv << depth << "," << srcId << "," << srcName << ",";
+                    g_debugContext.detailedCsv << centerPX << "," << centerPY << "," << centerPDepth << ",";
+                    g_debugContext.detailedCsv << (centerProj ? "1" : "0") << "," << (centerInside ? "1" : "0") << ",";
+
+                    // reference patch diagnostics
+                    g_debugContext.detailedCsv << patchSamplesConsidered << "," << patchSamplesReferenceOpaque << "," << refRequiredOpaque << "," << (refPatchValid ? "1" : "0") << ",";
+
+                    // per-source projection and sampling diagnostics
+                    // fields: projSuccess, projFailures, projOutside, sourceMaskRejected, sourceOpaque
+                    g_debugContext.detailedCsv << patchSamplesProjSuccess << "," << patchSamplesProjFailures << "," << patchSamplesProjOutside << "," << patchSamplesSourceMaskRejected << "," << patchSamplesSourceOpaque << ",";
+
+                    // final contribution and cost
+                    g_debugContext.detailedCsv << sampleCount << "," << refRequiredOpaque << "," << (sourceContributed ? "1" : "0") << ",";
+                    g_debugContext.detailedCsv << (sourceContributed ? std::to_string(sourceIndividualCost) : std::string()) << ",";
+
+                    // rejection reason (if any)
+                    g_debugContext.detailedCsv << (sourceContributed ? std::string() : rejectionReason) << "\n";
+
+                    // Also emit a console-friendly per-source message so you see rejections immediately
+                    std::ostringstream ps;
+                    ps << "[PlaneSweepDebug] plane=" << g_debugContext.currentPlaneIndex << " depth=" << g_debugContext.currentDepth << "\n";
+                    ps << "source=" << srcId << " expectedPatchSamples=" << patchArea << " refRejectedByMask=" << (patchSamplesConsidered - patchSamplesReferenceOpaque) << " projFailures=" << patchSamplesProjFailures << " projOutside=" << patchSamplesProjOutside << " srcMaskRejected=" << patchSamplesSourceMaskRejected << " validSamples=" << sampleCount << " requiredSamples=" << refRequiredOpaque << " contributed=" << (sourceContributed ? "true" : "false") << "\n";
+                    ps << "reason=" << (sourceContributed ? "" : rejectionReason) << "\n";
+                    UIUtility::Print(ps.str());
+                }
+            }
+
+            // instrumentation: write per-plane summary
+            if (instrument && g_debugContext.detailedCsv.is_open())
+            {
+                // write a plane summary row with sourceImageId = -1
+                g_debugContext.detailedCsv << g_debugContext.currentPlaneIndex << "," << depth << ",-1,SUMMARY,,,,,,," << ",,,,,," << validSourceViews << "," << minValidSourceViews << "," << (validSourceViews >= minValidSourceViews ? "1" : "0") << "," << (validSourceViews >= minValidSourceViews ? std::to_string((totalCost / static_cast<float>(validSourceViews))) : "") << "\n";
+                g_debugContext.lastPlaneValidSources = validSourceViews;
             }
 
             if (validSourceViews < minValidSourceViews)
             {
+                g_debugContext.lastPlaneHasCost = false;
+                g_debugContext.lastPlaneAvgCost = 0.0f;
                 return false;
             }
 
             cost = totalCost / static_cast<float>(validSourceViews);
-            return std::isfinite(cost);
+            g_debugContext.lastPlaneHasCost = std::isfinite(cost);
+            g_debugContext.lastPlaneAvgCost = cost;
+            return g_debugContext.lastPlaneHasCost;
         }
 
         //Saves one plane sweep depth output.
@@ -1973,6 +2287,565 @@ namespace graphicsFX
 
             const bool previewSaved = SaveTexture(basePath.string() + ".png", preview, TextureFileType::Png);
             return depthFile.is_open() || previewSaved;
+        }
+
+        //Debug one reference pixel across all candidate depth planes and write diagnostics.
+        void MultiViewUtility::MultiViewPlaneSweepUtility::DebugPixelSweep(
+            const ColmapSetup &setup,
+            const PlaneSweepImage &referenceImage,
+            const std::vector<PlaneSweepImage> &sourceImages,
+            const PlaneSweepDepthRange &depthRange
+        )
+        {
+            if (!setup.m_planeSweepDebugEnabled)
+            {
+                return;
+            }
+
+            std::error_code ec;
+            const std::filesystem::path outputFolder = PathUtility::ResolvePath(setup.m_planeSweepOutputFolder) / "PlaneSweepDebug";
+            std::filesystem::create_directories(outputFolder, ec);
+            if (ec)
+            {
+                UIUtility::Print("PlaneSweepDebug: failed to create output folder " + outputFolder.string() + "\n");
+                return;
+            }
+
+            const uint32_t refImageId = referenceImage.m_camera.m_imageId;
+            const std::string refName = referenceImage.m_camera.m_name.empty() ? ("image_" + std::to_string(refImageId)) : referenceImage.m_camera.m_name;
+            const int debugX = setup.m_planeSweepDebugPixelX;
+            const int debugY = setup.m_planeSweepDebugPixelY;
+
+            // Sanity print
+            std::ostringstream info;
+            info << "PlaneSweepDebug for reference=" << refName << "(id=" << refImageId << ") pixel=(" << debugX << "," << debugY << ")\n";
+            info << "  ref texture size=" << referenceImage.m_texture.m_width << "x" << referenceImage.m_texture.m_height << "\n";
+            info << "  intrinsic size=" << referenceImage.m_intrinsic.m_width << "x" << referenceImage.m_intrinsic.m_height << "\n";
+            info << "  fx=" << referenceImage.m_intrinsic.m_fx << " fy=" << referenceImage.m_intrinsic.m_fy << " cx=" << referenceImage.m_intrinsic.m_cx << " cy=" << referenceImage.m_intrinsic.m_cy << "\n";
+            info << "  depthRange near=" << depthRange.m_nearDepth << " far=" << depthRange.m_farDepth << " fromSparsePoints=" << (depthRange.m_fromSparsePoints ? "true" : "false") << "\n";
+            info << "  selected source image ids:";
+            for (const auto &s : sourceImages) info << " " << s.m_camera.m_imageId;
+            info << "\n";
+            UIUtility::Print(info.str());
+
+            // If configured, attempt to load COLMAP observations for anchor diagnostics (debug-only)
+            ColmapPointsDebugReadResult colmapDebugPoints;
+            bool haveColmapAnchor = false;
+            int64_t anchorPointId = -1;
+            Float3 anchorWorldPos{ 0.0f, 0.0f, 0.0f };
+            double anchorColmapError = 0.0;
+            float anchorObservedX = 0.0f, anchorObservedY = 0.0f;
+            float anchorObservedDistance = 0.0f;
+            size_t anchorTrackLength = 0;
+            float anchorCameraZ = 0.0f;
+            int projMatches = 0;
+            double reprojMean = 0.0;
+            double reprojMax = 0.0;
+
+            // Track best and second-best costs for the debug pixel across planes (declared early so anchor summary can reference them)
+            const float s_infty_f = std::numeric_limits<float>::infinity();
+            float bestCost = s_infty_f;
+            float secondBestCost = s_infty_f;
+            float bestDepth = 0.0f;
+
+            // Local plane-sweep parameters used by anchor diagnostics (available before the plane loop)
+            // Note: these locals are re-declared later at the main plane loop; keep these only for early anchor diagnostics
+            // plane-sweep parameters (declared here for use in the main loop)
+            const int patchRadius = std::max(0, setup.m_planeSweepPatchRadius);
+            const int minValidSourceViews = std::max(1, std::min(static_cast<int>(sourceImages.size()), setup.m_planeSweepMinValidSourceViews));
+            const float alphaThreshold = std::clamp(setup.m_planeSweepAlphaThreshold, 0.0f, 1.0f);
+            const float minimumOpaquePatchRatio = std::clamp(setup.m_planeSweepMinimumOpaquePatchRatio, 0.0f, 1.0f);
+
+            // prepare anchor CSV handle (opened only if needed)
+            std::ofstream anchorCsv;
+            bool anchorCsvOpened = false;
+            float anchorColmapCost = 0.0f;
+            bool anchorColmapHasCost = false;
+
+            if (setup.m_planeSweepDebugColmapAnchorEnabled)
+            {
+                colmapDebugPoints = MultiViewUtility::LoadColmapPointsWithObservations(setup);
+                const auto it = colmapDebugPoints.m_imageObservations.find(refImageId);
+                if (it == colmapDebugPoints.m_imageObservations.end() || it->second.empty())
+                {
+                    UIUtility::Print("PlaneSweepDebug COLMAP anchor: no COLMAP 2D observations found for reference image " + std::to_string(refImageId) + "\n");
+                }
+
+            // After plane sweep, write anchor summary row if requested
+            if (haveColmapAnchor && anchorCsvOpened)
+            {
+                // abs depth difference
+                double absDepthDiff = std::numeric_limits<double>::infinity();
+                if (bestDepth > 0.0f && anchorCameraZ > 0.0f)
+                {
+                    absDepthDiff = std::fabs(static_cast<double>(bestDepth) - static_cast<double>(anchorCameraZ));
+                }
+
+                // write one summary row containing anchor info and plane-sweep best comparisons
+                anchorCsv << anchorPointId << "," << anchorWorldPos.x << "," << anchorWorldPos.y << "," << anchorWorldPos.z << "," << anchorColmapError << "," << anchorObservedX << "," << anchorObservedY << "," << anchorObservedDistance << "," << anchorTrackLength << "," << anchorCameraZ << ",";
+                if (bestDepth > 0.0f)
+                {
+                    anchorCsv << bestDepth << "," << bestCost << "," << secondBestCost << ",";
+                }
+                else
+                {
+                    anchorCsv << ",,,";
+                }
+
+                if (anchorColmapHasCost)
+                {
+                    anchorCsv << anchorColmapCost << ",";
+                }
+                else
+                {
+                    anchorCsv << ",";
+                }
+
+                if (std::isfinite(absDepthDiff))
+                {
+                    anchorCsv << absDepthDiff << "\n";
+                }
+                else
+                {
+                    anchorCsv << "\n";
+                }
+
+                anchorCsv.close();
+
+                // Print concise summary to console using available helpers
+                {
+                    std::ostringstream s;
+                    s << "PlaneSweepDebug COLMAP anchor summary: pointId=" << anchorPointId << " colmapXYZ=(" << anchorWorldPos.x << "," << anchorWorldPos.y << "," << anchorWorldPos.z << ") colmapErr=" << static_cast<float>(anchorColmapError) << "\n";
+                    UIUtility::Print(s.str());
+                }
+                {
+                    std::ostringstream s;
+                    s << "  requestedPixel=(" << debugX << "," << debugY << ") nearestColmapPixel=(" << static_cast<int>(std::lround(anchorObservedX)) << "," << static_cast<int>(std::lround(anchorObservedY)) << ") distance=" << anchorObservedDistance << " trackLen=" << anchorTrackLength << "\n";
+                    UIUtility::Print(s.str());
+                }
+                {
+                    std::ostringstream s;
+                    s << "  colmapCameraZ=" << anchorCameraZ << " planeSweepBestDepth=" << bestDepth << " bestCost=" << bestCost << " secondBestCost=" << secondBestCost << " absDepthDiff=";
+                    if (std::isfinite(absDepthDiff)) s << static_cast<float>(absDepthDiff); else s << "n/a";
+                    s << "\n";
+                    UIUtility::Print(s.str());
+                }
+                {
+                    std::ostringstream s;
+                    s << "  projectionConsistency: obsCount=" << projMatches << " meanPx=" << static_cast<float>(reprojMean) << " maxPx=" << static_cast<float>(reprojMax) << "\n";
+                    UIUtility::Print(s.str());
+                }
+            }
+                else
+                {
+                    const int maxDist = setup.m_planeSweepDebugColmapAnchorMaxPixelDistance;
+                    double bestDist = std::numeric_limits<double>::infinity();
+                    ColmapPointObservation bestObs;
+                    bool found = false;
+                    for (const ColmapPointObservation &obs : it->second)
+                    {
+                        const double dx = static_cast<double>(obs.m_x) - static_cast<double>(debugX);
+                        const double dy = static_cast<double>(obs.m_y) - static_cast<double>(debugY);
+                        const double d = std::sqrt(dx * dx + dy * dy);
+                        if (d < bestDist && d <= static_cast<double>(maxDist))
+                        {
+                            bestDist = d;
+                            bestObs = obs;
+                            found = true;
+                        }
+                    }
+
+                    if (!found)
+                    {
+                        UIUtility::Print("PlaneSweepDebug COLMAP anchor: no COLMAP point within max pixel distance " + std::to_string(maxDist) + " of requested debug pixel\n");
+                    }
+                    else
+                    {
+                        // find point3D record
+                        const auto pit = colmapDebugPoints.m_pointsById.find(static_cast<int64_t>(bestObs.m_point2dIdx));
+                        // Note: bestObs stores point2d index but not point id; images.txt stores triples x y POINT3D_ID in obsTokens - we stored pid into observation by mapping token third value to m_point2dIdx? Actually m_point2dIdx stores the 2D index; we need to recover point id differently.
+                        // The observation stored in m_imageObservations was created from the triple, but we didn't store POINT3D_ID in the observation struct. Recover point id from mapping by searching points that list this observation (slow but acceptable for debug).
+                        int64_t matchedPid = -1;
+                        for (const auto &pair : colmapDebugPoints.m_pointsById)
+                        {
+                            for (const ColmapPointObservation &po : pair.second.m_observations)
+                            {
+                                if (po.m_imageId == bestObs.m_imageId && po.m_point2dIdx == bestObs.m_point2dIdx)
+                                {
+                                    matchedPid = pair.first;
+                                    break;
+                                }
+                            }
+                            if (matchedPid != -1) break;
+                        }
+
+                        if (matchedPid == -1)
+                        {
+                            UIUtility::Print("PlaneSweepDebug COLMAP anchor: matched observation but could not find corresponding 3D point record\n");
+                        }
+                        else
+                        {
+                            const ColmapPoint3DDebug &pt = colmapDebugPoints.m_pointsById[matchedPid];
+                            haveColmapAnchor = true;
+                            anchorPointId = matchedPid;
+                            anchorWorldPos = pt.m_position;
+                            anchorColmapError = pt.m_error;
+                            anchorObservedX = bestObs.m_x;
+                            anchorObservedY = bestObs.m_y;
+                            anchorObservedDistance = static_cast<float>(bestDist);
+                            anchorTrackLength = pt.m_observations.size();
+
+                            // compute camera-space Z in reference camera
+                            float projX = 0.0f, projY = 0.0f, projDepth = 0.0f;
+                            if (MultiViewUtility::MultiViewPlaneSweepUtility::ProjectPoint(referenceImage.m_camera, referenceImage.m_intrinsic, anchorWorldPos, projX, projY, projDepth))
+                            {
+                                anchorCameraZ = projDepth;
+                                {
+                                    std::ostringstream s;
+                                    s << "PlaneSweepDebug COLMAP anchor POINT3D_ID=" << anchorPointId << " XYZ=(" << anchorWorldPos.x << "," << anchorWorldPos.y << "," << anchorWorldPos.z << ") error=" << static_cast<float>(anchorColmapError) << " refObserved=(" << anchorObservedX << "," << anchorObservedY << ") distance=" << anchorObservedDistance << " trackLen=" << anchorTrackLength << "\n";
+                                    UIUtility::Print(s.str());
+                                }
+                                {
+                                    std::ostringstream s;
+                                    s << "PlaneSweepDebug COLMAP anchor camera-Z depth = " << anchorCameraZ << "\n";
+                                    UIUtility::Print(s.str());
+                                }
+                            }
+                            else
+                            {
+                                UIUtility::Print("PlaneSweepDebug COLMAP anchor: failed to project COLMAP XYZ into reference camera\n");
+                            }
+
+                            // Projection consistency test across source images
+                            projMatches = 0;
+                            reprojMean = 0.0;
+                            reprojMax = 0.0;
+                            const std::filesystem::path anchorCsvPath = outputFolder / ("colmap_anchor_ref" + std::to_string(refImageId) + "_x" + std::to_string(debugX) + "_y" + std::to_string(debugY) + ".csv");
+                            anchorCsv.open(anchorCsvPath.string());
+                            if (anchorCsv.is_open())
+                            {
+                                anchorCsvOpened = true;
+                                anchorCsv << "POINT3D_ID,worldX,worldY,worldZ,colmapError,refObservedX,refObservedY,refDist,trackLength,colmapCameraZ,planeSweepBestDepth,planeSweepBestCost,planeSweepSecondBestCost,costAtColmapDepth,absDepthDiff" << "\n";
+                            }
+
+                            // For each source image, check whether COLMAP has an observation and compare projected position
+                            for (const PlaneSweepImage &src : sourceImages)
+                            {
+                                const uint32_t sid = src.m_camera.m_imageId;
+                                // find observation in point observations
+                                bool foundObs = false;
+                                float colmapX = 0.0f, colmapY = 0.0f;
+                                for (const ColmapPointObservation &o : pt.m_observations)
+                                {
+                                    if (o.m_imageId == sid)
+                                    {
+                                        foundObs = true;
+                                        colmapX = o.m_x;
+                                        colmapY = o.m_y;
+                                        break;
+                                    }
+                                }
+
+                                if (foundObs)
+                                {
+                                    float ourX = 0.0f, ourY = 0.0f, ourDepth = 0.0f;
+                                    bool projOk = MultiViewUtility::MultiViewPlaneSweepUtility::ProjectPoint(src.m_camera, src.m_intrinsic, anchorWorldPos, ourX, ourY, ourDepth);
+                                    const bool inside = projOk && ourX >= 0.0f && ourY >= 0.0f && ourX < static_cast<float>(src.m_texture.m_width) && ourY < static_cast<float>(src.m_texture.m_height);
+                                    double errPx = std::numeric_limits<double>::infinity();
+                                    if (projOk)
+                                    {
+                                        const double dx = static_cast<double>(ourX) - static_cast<double>(colmapX);
+                                        const double dy = static_cast<double>(ourY) - static_cast<double>(colmapY);
+                                        errPx = std::sqrt(dx * dx + dy * dy);
+                                        ++projMatches;
+                                        reprojMean += errPx;
+                                        reprojMax = std::max(reprojMax, errPx);
+                                    }
+
+                                    if (anchorCsv.is_open())
+                                    {
+                                        anchorCsv << sid << "," << colmapX << "," << colmapY << "," << (projOk ? std::to_string(ourX) : std::string()) << "," << (projOk ? std::to_string(ourY) : std::string()) << "," << (projOk ? std::to_string(errPx) : std::string()) << "," << (projOk ? (inside ? "inside" : "outside") : "projFailed") << "\n";
+                                    }
+                                }
+                            }
+
+                            if (projMatches > 0)
+                            {
+                                reprojMean /= static_cast<double>(projMatches);
+                            }
+                            {
+                                std::ostringstream s;
+                                s << "PlaneSweepDebug COLMAP projection consistency: obsCount=" << projMatches << " meanPx=" << static_cast<float>(reprojMean) << " maxPx=" << static_cast<float>(reprojMax) << "\n";
+                                UIUtility::Print(s.str());
+                            }
+
+                            // Evaluate matching cost at exact COLMAP depth (reference camera Z)
+                            if (anchorCameraZ > 0.0f)
+                            {
+                                float colmapCost = 0.0f;
+                                bool hasCost = MultiViewUtility::MultiViewPlaneSweepUtility::ComputePlaneCost(referenceImage, sourceImages, static_cast<float>(debugX), static_cast<float>(debugY), anchorCameraZ, patchRadius, std::max(1, std::min(static_cast<int>(sourceImages.size()), setup.m_planeSweepMinValidSourceViews)), alphaThreshold, minimumOpaquePatchRatio, colmapCost);
+                                {
+                                    std::ostringstream s;
+                                    s << "PlaneSweepDebug COLMAP depth cost: depth=" << anchorCameraZ << " cost=" << colmapCost << " hasCost=" << (hasCost ? "true" : "false") << "\n";
+                                    UIUtility::Print(s.str());
+                                }
+                                anchorColmapCost = colmapCost;
+                                anchorColmapHasCost = hasCost;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // CSV file
+            const std::string csvName = "planesweep_debug_ref" + std::to_string(refImageId) + "_x" + std::to_string(debugX) + "_y" + std::to_string(debugY) + ".csv";
+            const std::filesystem::path csvPath = outputFolder / csvName;
+            std::ofstream csv(csvPath.string());
+            // Detailed CSV for ComputePlaneCost instrumentation
+            const std::string detailedName = "planesweep_debug_detailed_ref" + std::to_string(refImageId) + "_x" + std::to_string(debugX) + "_y" + std::to_string(debugY) + ".csv";
+            const std::filesystem::path detailedPath = outputFolder / detailedName;
+            // initialize global debug context used by ComputePlaneCost instrumentation
+            g_debugContext.enabled = true;
+            g_debugContext.refImageId = static_cast<int>(refImageId);
+            g_debugContext.pixelX = debugX;
+            g_debugContext.pixelY = debugY;
+            g_debugContext.minValidSourceViews = 0;
+            g_debugContext.detailedCsv.open(detailedPath.string());
+            if (g_debugContext.detailedCsv.is_open())
+            {
+                g_debugContext.detailedCsv << "planeIndex,depth,sourceImageId,sourceName,projX,projY,projDepth,projValid,insideImage,patchSamplesConsidered,patchSamplesReferenceOpaque,patchSamplesRefRejected,patchSamplesProjSuccess,patchSamplesProjFailures,patchSamplesProjOutside,patchSamplesSourceMaskRejected,patchSamplesSourceOpaque,validSamples,requiredSamples,contributed,sourceCost,rejectionReason" << "\n";
+            }
+            if (!csv.is_open())
+            {
+                UIUtility::Print("PlaneSweepDebug: failed to open " + csvPath.string() + " for writing\n");
+                return;
+            }
+
+            // Header with sanity info - prefix each metadata line with '# '
+            {
+                std::istringstream metaStream(info.str());
+                std::string metaLine;
+                while (std::getline(metaStream, metaLine))
+                {
+                    if (!metaLine.empty())
+                    {
+                        csv << "# " << metaLine << "\n";
+                    }
+                }
+            }
+
+            const int planeCount = std::max(2, setup.m_planeSweepPlaneCount);
+
+            const float inverseNear = 1.0f / std::max(depthRange.m_nearDepth, 0.0001f);
+            const float inverseFar = 1.0f / std::max(depthRange.m_farDepth, depthRange.m_nearDepth + 0.0001f);
+
+            // CSV column header
+            csv << "planeIndex,depth,hasCost,cost,worldX,worldY,worldZ";
+            for (std::size_t si = 0; si < sourceImages.size(); ++si)
+            {
+                csv << ",src" << si << "_projX,src" << si << "_projY,src" << si << "_projDepth,src" << si << "_projValid,src" << si << "_insideImage";
+            }
+            csv << "\n";
+
+            // Save one reference image crop around the configured debug pixel (once)
+            const int refWidth = static_cast<int>(referenceImage.m_texture.m_width);
+            const int refHeight = static_cast<int>(referenceImage.m_texture.m_height);
+            const int debugXint = debugX;
+            const int debugYint = debugY;
+            if (debugXint < 0 || debugYint < 0 || debugXint >= refWidth || debugYint >= refHeight)
+            {
+                UIUtility::Print("PlaneSweepDebug: configured debug pixel (" + std::to_string(debugXint) + "," + std::to_string(debugYint) + ") is outside reference texture " + std::to_string(refWidth) + "x" + std::to_string(refHeight) + ". Aborting debug sweep.\n");
+                return;
+            }
+
+            // create a small crop around the reference pixel
+            const int cropSizeRef = 41;
+            const int halfRef = cropSizeRef / 2;
+            TextureData refCrop;
+            refCrop.m_width = static_cast<uint32_t>(cropSizeRef);
+            refCrop.m_height = static_cast<uint32_t>(cropSizeRef);
+            refCrop.m_channelCount = 4U;
+            refCrop.m_pixels.assign(static_cast<std::size_t>(cropSizeRef * cropSizeRef * 4), 0U);
+            for (int yy = 0; yy < cropSizeRef; ++yy)
+            {
+                for (int xx = 0; xx < cropSizeRef; ++xx)
+                {
+                    const int srcX = debugXint + (xx - halfRef);
+                    const int srcY = debugYint + (yy - halfRef);
+                    if (srcX >= 0 && srcY >= 0 && srcX < refWidth && srcY < refHeight)
+                    {
+                        const std::size_t srcIndex = ((static_cast<std::size_t>(srcY) * referenceImage.m_texture.m_width + static_cast<std::size_t>(srcX)) * 4U);
+                        const std::size_t dstIndex = ((static_cast<std::size_t>(yy) * refCrop.m_width + static_cast<std::size_t>(xx)) * 4U);
+                        for (int c = 0; c < 4; ++c)
+                        {
+                            refCrop.m_pixels[dstIndex + c] = referenceImage.m_texture.m_pixels[srcIndex + c];
+                        }
+                    }
+                }
+            }
+            // draw red crosshair at center
+            const uint8_t r = 255U;
+            const uint8_t g = 0U;
+            const uint8_t b = 0U;
+            const uint8_t a = 255U;
+            const int cx = halfRef;
+            const int cy = halfRef;
+            for (int dx = -1; dx <= 1; ++dx)
+            {
+                const int x = cx + dx;
+                if (x >= 0 && x < cropSizeRef)
+                {
+                    const std::size_t idx = ((static_cast<std::size_t>(cy) * refCrop.m_width + static_cast<std::size_t>(x)) * 4U);
+                    refCrop.m_pixels[idx + 0U] = r;
+                    refCrop.m_pixels[idx + 1U] = g;
+                    refCrop.m_pixels[idx + 2U] = b;
+                    refCrop.m_pixels[idx + 3U] = a;
+                }
+            }
+            for (int dy = -1; dy <= 1; ++dy)
+            {
+                const int y = cy + dy;
+                if (y >= 0 && y < cropSizeRef)
+                {
+                    const std::size_t idx = ((static_cast<std::size_t>(y) * refCrop.m_width + static_cast<std::size_t>(cx)) * 4U);
+                    refCrop.m_pixels[idx + 0U] = r;
+                    refCrop.m_pixels[idx + 1U] = g;
+                    refCrop.m_pixels[idx + 2U] = b;
+                    refCrop.m_pixels[idx + 3U] = a;
+                }
+            }
+            const std::filesystem::path refCropPath = outputFolder / ("ref" + std::to_string(refImageId) + "_debug_pixel_crop.png");
+            SaveTexture(refCropPath.string(), refCrop, TextureFileType::Png);
+
+            for (int planeIndex = 0; planeIndex < planeCount; ++planeIndex)
+            {
+                const float t = planeCount <= 1 ? 0.0f : static_cast<float>(planeIndex) / static_cast<float>(planeCount - 1);
+                const float inverseDepth = (inverseNear * (1.0f - t)) + (inverseFar * t);
+                const float depth = 1.0f / std::max(inverseDepth, 0.000001f);
+
+                float cost = 0.0f;
+                // set current plane in global debug context used by ComputePlaneCost
+                if (g_debugContext.enabled)
+                {
+                    g_debugContext.currentPlaneIndex = planeIndex;
+                    g_debugContext.currentDepth = depth;
+                    g_debugContext.minValidSourceViews = minValidSourceViews;
+                }
+
+                bool hasCost = ComputePlaneCost(referenceImage, sourceImages, static_cast<float>(debugX), static_cast<float>(debugY), depth, patchRadius, minValidSourceViews, alphaThreshold, minimumOpaquePatchRatio, cost);
+
+                if (hasCost && std::isfinite(cost))
+                {
+                    if (cost < bestCost)
+                    {
+                        secondBestCost = bestCost;
+                        bestCost = cost;
+                        bestDepth = depth;
+                    }
+                    else if (cost < secondBestCost)
+                    {
+                        secondBestCost = cost;
+                    }
+                }
+
+                // Print concise console summary per plane using global context
+                if (g_debugContext.enabled)
+                {
+                    const int validSources = g_debugContext.lastPlaneValidSources;
+                    const int required = g_debugContext.minValidSourceViews;
+                    const bool planeHasCost = g_debugContext.lastPlaneHasCost;
+                    std::ostringstream ps;
+                    ps << "[PlaneSweepDebug] plane=" << planeIndex << " depth=" << depth << " validSources=" << validSources << " required=" << required << " hasCost=" << (planeHasCost ? "true" : "false");
+                    UIUtility::Print(ps.str() + "\n");
+                }
+
+                const Float3 worldPoint = UnprojectPixel(referenceImage.m_camera, referenceImage.m_intrinsic, static_cast<float>(debugX), static_cast<float>(debugY), depth);
+
+                csv << planeIndex << "," << depth << "," << (hasCost ? "1" : "0") << "," << cost << "," << worldPoint.x << "," << worldPoint.y << "," << worldPoint.z;
+
+                // For each source, project and record
+                for (const auto &src : sourceImages)
+                {
+                    float px = 0.0f;
+                    float py = 0.0f;
+                    float pdepth = 0.0f;
+                    const bool projValid = ProjectPoint(src.m_camera, src.m_intrinsic, worldPoint, px, py, pdepth);
+                    const bool insideImage = projValid && px >= 0.0f && py >= 0.0f && px < static_cast<float>(src.m_texture.m_width) && py < static_cast<float>(src.m_texture.m_height);
+                    csv << "," << px << "," << py << "," << pdepth << "," << (projValid ? "1" : "0") << "," << (insideImage ? "1" : "0");
+
+                    // Optionally save a small crop around the projected coordinate per-plane/source
+                    if (setup.m_planeSweepDebugSaveEveryPlane && projValid && src.m_texture.m_width > 0 && src.m_texture.m_height > 0)
+                    {
+                        const int cropSize = 41;
+                        const int half = cropSize / 2;
+                        const int centerX = static_cast<int>(std::lround(px));
+                        const int centerY = static_cast<int>(std::lround(py));
+                        TextureData crop;
+                        crop.m_width = static_cast<uint32_t>(cropSize);
+                        crop.m_height = static_cast<uint32_t>(cropSize);
+                        crop.m_channelCount = 4U;
+                        crop.m_pixels.assign(static_cast<std::size_t>(cropSize * cropSize * 4), 0U);
+
+                        for (int yy = 0; yy < cropSize; ++yy)
+                        {
+                            for (int xx = 0; xx < cropSize; ++xx)
+                            {
+                                const int srcX = centerX + (xx - half);
+                                const int srcY = centerY + (yy - half);
+                                if (srcX >= 0 && srcY >= 0 && srcX < static_cast<int>(src.m_texture.m_width) && srcY < static_cast<int>(src.m_texture.m_height))
+                                {
+                                    const std::size_t srcIndex = ((static_cast<std::size_t>(srcY) * src.m_texture.m_width + static_cast<std::size_t>(srcX)) * 4U);
+                                    const std::size_t dstIndex = ((static_cast<std::size_t>(yy) * crop.m_width + static_cast<std::size_t>(xx)) * 4U);
+                                    for (int c = 0; c < 4; ++c)
+                                    {
+                                        crop.m_pixels[dstIndex + c] = src.m_texture.m_pixels[srcIndex + c];
+                                    }
+                                }
+                            }
+                        }
+
+                        // Draw crosshair at center (red) using distinct local names to avoid hiding outer vars
+                        const uint8_t rr = 255U;
+                        const uint8_t gg = 0U;
+                        const uint8_t bb = 0U;
+                        const uint8_t aa = 255U;
+                        const int local_cx = half;
+                        const int local_cy = half;
+                        for (int dx = -1; dx <= 1; ++dx)
+                        {
+                            const int x = local_cx + dx;
+                            if (x >= 0 && x < cropSize)
+                            {
+                                const std::size_t idx = ((static_cast<std::size_t>(local_cy) * crop.m_width + static_cast<std::size_t>(x)) * 4U);
+                                crop.m_pixels[idx + 0U] = rr;
+                                crop.m_pixels[idx + 1U] = gg;
+                                crop.m_pixels[idx + 2U] = bb;
+                                crop.m_pixels[idx + 3U] = aa;
+                            }
+                        }
+                        for (int dy = -1; dy <= 1; ++dy)
+                        {
+                            const int y = local_cy + dy;
+                            if (y >= 0 && y < cropSize)
+                            {
+                                const std::size_t idx = ((static_cast<std::size_t>(y) * crop.m_width + static_cast<std::size_t>(local_cx)) * 4U);
+                                crop.m_pixels[idx + 0U] = rr;
+                                crop.m_pixels[idx + 1U] = gg;
+                                crop.m_pixels[idx + 2U] = bb;
+                                crop.m_pixels[idx + 3U] = aa;
+                            }
+                        }
+
+                        const std::string planeImgName = "ref" + std::to_string(refImageId) + "_plane" + std::to_string(planeIndex) + "_src" + std::to_string(src.m_camera.m_imageId) + ".png";
+                        const std::filesystem::path planeImgPath = outputFolder / planeImgName;
+                        SaveTexture(planeImgPath.string(), crop, TextureFileType::Png);
+                    }
+                }
+
+                csv << "\n";
+            }
+
+            UIUtility::Print("PlaneSweepDebug: wrote diagnostics to " + csvPath.string() + "\n");
         }
 
         //Computes grayscale patch texture variation.
@@ -2541,6 +3414,14 @@ namespace graphicsFX
                         sparsePointLookup,
                         sparsePoints
                     );
+                }
+
+                // If debug enabled and this is the configured reference image, run pixel sweep diagnostics and then return to avoid full reconstruction.
+                if (setup.m_planeSweepDebugEnabled && setup.m_planeSweepDebugReferenceImageId == static_cast<int>(referenceImage.m_camera.m_imageId))
+                {
+                    MultiViewPlaneSweepUtility::DebugPixelSweep(setup, referenceImage, sourceImages, depthRange);
+                    // Do not continue with full expensive reconstruction when debugging a single pixel.
+                    return result;
                 }
 
                 //Builds plane sweep points for one reference image.

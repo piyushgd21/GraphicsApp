@@ -828,6 +828,56 @@ namespace graphicsFX
         ApplyMouseButton(values, "MOUSE.LOOKBUTTON", setup.m_mouse.m_lookButton);
         ApplyMouseButton(values, "MOUSE.SMOOTHMOVEBUTTON", setup.m_mouse.m_smoothMoveButton);
 
+        ApplyInt(
+            values,
+            "COLMAP.PLANESWEEPDEBUGREFERENCEIMAGEID",
+            setup.m_colmap.m_planeSweepDebugReferenceImageId,
+            0,
+            1000000
+        );
+
+        ApplyBool(
+            values,
+            "COLMAP.PLANESWEEPDEBUGENABLED",
+            setup.m_colmap.m_planeSweepDebugEnabled
+        );
+
+        ApplyBool(
+            values,
+            "COLMAP.PLANESWEEPDEBUGCOLMAPANCHORENABLED",
+            setup.m_colmap.m_planeSweepDebugColmapAnchorEnabled
+        );
+
+        ApplyInt(
+            values,
+            "COLMAP.PLANESWEEPDEBUGPIXELX",
+            setup.m_colmap.m_planeSweepDebugPixelX,
+            0,
+            100000
+        );
+
+        ApplyInt(
+            values,
+            "COLMAP.PLANESWEEPDEBUGPIXELY",
+            setup.m_colmap.m_planeSweepDebugPixelY,
+            0,
+            100000
+        );
+
+        ApplyBool(
+            values,
+            "COLMAP.PLANESWEEPDEBUGSAVEEVERYPLANE",
+            setup.m_colmap.m_planeSweepDebugSaveEveryPlane
+        );
+
+        ApplyInt(
+            values,
+            "COLMAP.PLANESWEEPDEBUGCOLMAPANCHORMAXPIXELDISTANCE",
+            setup.m_colmap.m_planeSweepDebugColmapAnchorMaxPixelDistance,
+            0,
+            10000
+        );
+
         return setup;
     }
 

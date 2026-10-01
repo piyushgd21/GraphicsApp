@@ -55,6 +55,33 @@ namespace graphicsFX
         double m_p2{ 0.0 }; //Stores the second tangential distortion term.
     };
 
+    //Stores one COLMAP 2D observation for debug anchor experiments.
+    struct ColmapPointObservation
+    {
+        uint32_t m_imageId{ 0U }; // image id where observed
+        uint32_t m_point2dIdx{ 0U }; // index of the 2D keypoint in the image (order in images.txt)
+        float m_x{ 0.0f }; // observed pixel x
+        float m_y{ 0.0f }; // observed pixel y
+    };
+
+    //Stores one COLMAP 3D point with attached debug observations.
+    struct ColmapPoint3DDebug
+    {
+        int64_t m_pointId{ -1 }; // POINT3D_ID
+        Float3 m_position{ 0.0f, 0.0f, 0.0f }; // XYZ (converted to app coordinates)
+        double m_error{ 0.0 }; // COLMAP reprojection error
+        std::vector<ColmapPointObservation> m_observations; // all 2D observations
+    };
+
+    //Result of a debug-only COLMAP points + observations read.
+    struct ColmapPointsDebugReadResult
+    {
+        // map point id -> point record
+        std::unordered_map<int64_t, ColmapPoint3DDebug> m_pointsById;
+        // per-image observation list (image id -> list of observations)
+        std::unordered_map<uint32_t, std::vector<ColmapPointObservation>> m_imageObservations;
+    };
+
     //Metrics and timings collected during an experimental plane sweep run.
     struct PlaneSweepExperimentMetrics
     {
@@ -141,7 +168,7 @@ namespace graphicsFX
     class MultiViewUtility final
     {
 
-        private:
+        public:
 
             //Defines helper functions for COLMAP camera loading.
             class MultiViewCameraUtility final
@@ -584,6 +611,14 @@ namespace graphicsFX
                         float &cost
                     );
 
+                    //Debug one reference pixel across all candidate depth planes and write diagnostics.
+                    static void DebugPixelSweep(
+                        const ColmapSetup &setup,
+                        const PlaneSweepImage &referenceImage,
+                        const std::vector<PlaneSweepImage> &sourceImages,
+                        const PlaneSweepDepthRange &depthRange
+                    );
+
                     //Saves one plane sweep depth output.
                     static bool SaveDepthOutput(const ColmapSetup &setup, const ColmapCameraData &camera, const std::vector<float> &depthValues, uint32_t width, uint32_t height);
 
@@ -628,6 +663,9 @@ namespace graphicsFX
 
             //Loads COLMAP camera intrinsics and poses.
             static ColmapCameraReadResult LoadColmapCameras(const ColmapSetup &setup);
+
+            //Debug-only: Loads COLMAP points3D.txt and images.txt observations.
+            static ColmapPointsDebugReadResult LoadColmapPointsWithObservations(const ColmapSetup &setup);
 
             //Builds sparse COLMAP points from points3D data.
             static ColmapSparsePointCloudResult BuildColmapSparsePointCloud(const ColmapCameraReadResult &colmapData, const ColmapSetup &setup);
