@@ -9,6 +9,7 @@
 #include "MultiViewUtility.h"
 
 #include "PlaneSweepGpu.h"
+#include "PlaneSweepGpuTypes.h"
 
 #include "PathUtility.h"
 #include "StringUtility.h"
@@ -3319,11 +3320,63 @@ namespace graphicsFX
             {
                 UIUtility::Print("BuildColmapPlaneSweepPointCloud received PlaneSweepGpu handoff.\n");
             }
-            static bool multiSourceDescriptorTestAttempted = false;
-            if (planeSweepGpuPtr != nullptr && !multiSourceDescriptorTestAttempted)
+            static bool unprojectPixelTestAttempted = false;
+            if (planeSweepGpuPtr != nullptr && !unprojectPixelTestAttempted)
             {
-                multiSourceDescriptorTestAttempted = true;
-                planeSweepGpuPtr->RunMultiSourceDescriptorSmokeTest();
+                unprojectPixelTestAttempted = true;
+                std::vector<ColmapCameraData> cameras(3);
+                std::vector<ColmapCameraIntrinsicData> intrinsics(3);
+                cameras[0].m_position = Float3{ 1.25f, -2.5f, 3.75f };
+                cameras[0].m_forward = Float3{ 0.0f, 0.0f, 1.0f };
+                cameras[0].m_up = Float3{ 0.0f, 1.0f, 0.0f };
+                cameras[0].m_right = Float3{ 1.0f, 0.0f, 0.0f };
+                intrinsics[0].m_width = 640; intrinsics[0].m_height = 480; intrinsics[0].m_fx = 500.0; intrinsics[0].m_fy = 510.0;
+                intrinsics[0].m_cx = 319.5; intrinsics[0].m_cy = 239.5; intrinsics[0].m_k1 = 0.010; intrinsics[0].m_k2 = -0.002;
+                intrinsics[0].m_p1 = 0.0010; intrinsics[0].m_p2 = -0.0007;
+
+                cameras[1].m_position = Float3{ -4.0f, 1.5f, 8.0f };
+                cameras[1].m_forward = Float3{ 1.0f, 0.0f, 0.0f };
+                cameras[1].m_up = Float3{ 0.0f, 1.0f, 0.0f };
+                cameras[1].m_right = Float3{ 0.0f, 0.0f, -1.0f };
+                intrinsics[1].m_width = 1280; intrinsics[1].m_height = 720; intrinsics[1].m_fx = 900.0; intrinsics[1].m_fy = 880.0;
+                intrinsics[1].m_cx = 640.25; intrinsics[1].m_cy = 360.75; intrinsics[1].m_k1 = -0.015; intrinsics[1].m_k2 = 0.003;
+                intrinsics[1].m_p1 = -0.0020; intrinsics[1].m_p2 = 0.0015;
+
+                cameras[2].m_position = Float3{ 10.0f, -3.0f, -6.0f };
+                cameras[2].m_forward = Float3{ 0.5f, 0.0f, 0.8660254f };
+                cameras[2].m_up = Float3{ 0.0f, 1.0f, 0.0f };
+                cameras[2].m_right = Float3{ 0.8660254f, 0.0f, -0.5f };
+                intrinsics[2].m_width = 1920; intrinsics[2].m_height = 1080; intrinsics[2].m_fx = 1100.0; intrinsics[2].m_fy = 1085.0;
+                intrinsics[2].m_cx = 959.25; intrinsics[2].m_cy = 539.75; intrinsics[2].m_k1 = 0.025; intrinsics[2].m_k2 = -0.006;
+                intrinsics[2].m_p1 = 0.0018; intrinsics[2].m_p2 = -0.0012;
+
+                const std::array<std::array<float, 3>, 16> cases{{
+                    {{0, 319.0f, 239.0f}}, {{0, 0.0f, 0.0f}}, {{0, 639.0f, 479.0f}}, {{0, 123.25f, 321.75f}}, {{0, 500.5f, 100.125f}},
+                    {{1, 639.75f, 360.25f}}, {{1, 0.0f, 0.0f}}, {{1, 1279.0f, 719.0f}}, {{1, 250.125f, 600.875f}}, {{1, 1000.5f, 111.25f}},
+                    {{2, 958.75f, 539.25f}}, {{2, 0.0f, 0.0f}}, {{2, 1919.0f, 1079.0f}}, {{2, 400.375f, 700.625f}}, {{2, 1500.875f, 250.5f}}, {{2, 959.125f, 540.875f}}
+                }};
+                const std::array<float, 16> depths{{ 1.0f, 0.5f, 10.0f, 3.2f, 25.0f, 1.0f, 2.5f, 12.0f, 0.75f, 35.0f, 1.0f, 5.0f, 20.0f, 2.25f, 40.0f, 0.125f }};
+                std::vector<uint32_t> caseCameraIndices(16);
+                std::vector<float> sampleValues(16 * 4, 0.0f);
+                std::vector<float> expectedPositions(16 * 3, 0.0f);
+                for (uint32_t i = 0; i < 16; ++i)
+                {
+                    const uint32_t cameraIndex = static_cast<uint32_t>(cases[i][0]);
+                    const float x = cases[i][1];
+                    const float y = cases[i][2];
+                    const float depth = depths[i];
+                    caseCameraIndices[i] = cameraIndex;
+                    sampleValues[i * 4] = x; sampleValues[i * 4 + 1] = y; sampleValues[i * 4 + 2] = depth;
+                    const Float3 expected = MultiViewPlaneSweepUtility::UnprojectPixel(cameras[cameraIndex], intrinsics[cameraIndex], x, y, depth);
+                    expectedPositions[i * 3] = expected.x; expectedPositions[i * 3 + 1] = expected.y; expectedPositions[i * 3 + 2] = expected.z;
+                }
+                planeSweepGpuPtr->RunUnprojectPixelSmokeTest(
+                    MakeGpuCameraIntrinsicsArray(intrinsics),
+                    MakeGpuCameraPoseArray(cameras),
+                    caseCameraIndices,
+                    sampleValues,
+                    expectedPositions
+                );
             }
             //Returns an empty result when plane sweep input is unavailable or disabled.
             ColmapPlaneSweepResult result;
@@ -3357,8 +3410,6 @@ namespace graphicsFX
             const std::size_t requiredSourceCount = std::min(requestedSourceCount, static_cast<std::size_t>(std::max(1, setup.m_planeSweepMinValidSourceViews)));
             std::vector<MultiViewPlaneSweepUtility::PlaneSweepDepthMap> depthMaps;
             std::vector<MultiViewPlaneSweepUtility::PlaneSweepPointCandidate> pointCandidates;
-            static bool realImageSamplingAttempted = false;
-            static bool smallRealImageNoticePrinted = false;
 
             //Processes each sampled camera as a plane-sweep reference view.
             for (std::size_t referenceCameraIndex = 0U; referenceCameraIndex < colmapData.m_cameras.size(); referenceCameraIndex += referenceStep)
@@ -3370,15 +3421,7 @@ namespace graphicsFX
                     continue;
                 }
 
-                if (planeSweepGpuPtr != nullptr && !realImageSamplingAttempted &&
-                    (referenceImage.m_texture.m_width < 2 || referenceImage.m_texture.m_height < 2) && !smallRealImageNoticePrinted)
-                {
-                    UIUtility::Print("Phase 2H requires a real image of at least 2x2; skipping smaller loaded image candidate.\n");
-                    smallRealImageNoticePrinted = true;
-                }
-
-                if (planeSweepGpuPtr != nullptr && !realImageSamplingAttempted &&
-                    referenceImage.m_texture.m_width >= 2 && referenceImage.m_texture.m_height >= 2)
+#if 0
                 {
                     const auto validateTexture = [&](const TextureData &texture, const char *role, VkDeviceSize &byteCount) -> bool
                     {
@@ -3551,7 +3594,7 @@ namespace graphicsFX
                             }
                         }
                     }
-                }
+#endif
 
                 //Selects the strongest source-camera candidates for the current reference view.
                 const std::vector<std::size_t> sourceCameraIndices = MultiViewPlaneSweepUtility::SelectSourceCameraIndices(

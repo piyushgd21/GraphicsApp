@@ -3,10 +3,13 @@
 #include <vulkan/vulkan.h>
 #include <vector>
 #include <string>
+#include <cstdint>
 
 namespace graphicsFX
 {
 	struct TextureData;
+	struct GpuCameraIntrinsics;
+	struct GpuCameraPose;
 
 	class PlaneSweepGpu
 	{
@@ -23,6 +26,13 @@ namespace graphicsFX
 		bool RunBilinearSamplingSmokeTest(void);
 		bool RunPlaneSweepPixelSamplingSmokeTest(void);
 		bool RunMultiSourceDescriptorSmokeTest(void);
+		bool RunUnprojectPixelSmokeTest(
+			const std::vector<GpuCameraIntrinsics> &intrinsics,
+			const std::vector<GpuCameraPose> &poses,
+			const std::vector<uint32_t> &cameraIndices,
+			const std::vector<float> &sampleValues,
+			const std::vector<float> &expectedPositions
+		);
 		bool RunRealImageSamplingSmokeTest(
 			const TextureData &texture,
 			const TextureData *maskTexturePtr,
