@@ -36,6 +36,8 @@ namespace Microsoft
 
 namespace graphicsFX
 {
+    class PlaneSweepGpu;
+
     //Stores one COLMAP camera intrinsic record.
     struct ColmapCameraIntrinsicData
     {
@@ -674,7 +676,12 @@ namespace graphicsFX
             static ColmapDepthPointCloudResult BuildColmapDepthPointCloud(const ColmapCameraReadResult &colmapData, const ColmapSetup &setup);
 
             //Builds COLMAP points from plane sweep reconstruction.
-            static ColmapPlaneSweepResult BuildColmapPlaneSweepPointCloud(const ColmapCameraReadResult &colmapData, const ColmapSetup &setup, PlaneSweepExperimentMetrics *metricsPtr = nullptr);
+            static ColmapPlaneSweepResult BuildColmapPlaneSweepPointCloud(
+                const ColmapCameraReadResult &colmapData,
+                const ColmapSetup &setup,
+                PlaneSweepExperimentMetrics *metricsPtr = nullptr,
+                PlaneSweepGpu *planeSweepGpuPtr = nullptr
+            );
 
     };
 }

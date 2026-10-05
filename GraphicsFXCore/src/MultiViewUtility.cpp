@@ -8,6 +8,8 @@
 
 #include "MultiViewUtility.h"
 
+#include "PlaneSweepGpu.h"
+
 #include "PathUtility.h"
 #include "StringUtility.h"
 #include "TextureUtility.h"
@@ -3311,8 +3313,13 @@ namespace graphicsFX
         }
 
         //Builds COLMAP points from plane sweep reconstruction.
-        ColmapPlaneSweepResult MultiViewUtility::BuildColmapPlaneSweepPointCloud(const ColmapCameraReadResult &colmapData, const ColmapSetup &setup, PlaneSweepExperimentMetrics *metricsPtr)
+        ColmapPlaneSweepResult MultiViewUtility::BuildColmapPlaneSweepPointCloud(const ColmapCameraReadResult &colmapData, const ColmapSetup &setup, PlaneSweepExperimentMetrics *metricsPtr, PlaneSweepGpu *planeSweepGpuPtr)
         {
+            if (planeSweepGpuPtr != nullptr)
+            {
+                UIUtility::Print("BuildColmapPlaneSweepPointCloud received PlaneSweepGpu handoff.\n");
+            }
+            static_cast<void>(planeSweepGpuPtr);
             //Returns an empty result when plane sweep input is unavailable or disabled.
             ColmapPlaneSweepResult result;
             if (!MultiViewPlaneSweepUtility::PlaneSweepReady(colmapData, setup))

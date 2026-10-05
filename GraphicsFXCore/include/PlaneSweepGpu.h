@@ -12,7 +12,7 @@ namespace graphicsFX
 		PlaneSweepGpu(void);
 		~PlaneSweepGpu(void);
 
-		void Initialize(VkDevice device, VkPhysicalDevice physicalDevice, uint32_t queueFamilyIndex, VkQueue queue, VkCommandPool commandPool);
+		void Initialize(VkDevice device, VkPhysicalDevice physicalDevice, VkQueue queue, VkCommandPool commandPool);
 		void RunComputeSmokeTest(void);
 		bool RunStorageBufferSmokeTest(void);
 		bool RunCameraLayoutSmokeTest(void);
@@ -29,7 +29,6 @@ namespace graphicsFX
 		bool m_initialized{ false };
 		VkDevice m_device{ VK_NULL_HANDLE };
 		VkPhysicalDevice m_physicalDevice{ VK_NULL_HANDLE };
-		uint32_t m_queueFamilyIndex{ 0 };
 		VkQueue m_queue{ VK_NULL_HANDLE };
 		VkCommandPool m_commandPool{ VK_NULL_HANDLE };
 

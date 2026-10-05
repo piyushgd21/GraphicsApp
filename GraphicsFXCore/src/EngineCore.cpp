@@ -12,7 +12,6 @@
 #include "PathUtility.h"
 #include "ShaderUtility.h"
 #include "StringUtility.h"
-#include "PlaneSweepGpu.h"
 
 #include <algorithm>
 #include <array>
@@ -304,59 +303,6 @@ namespace graphicsFX
         m_graphicsUtility.InitInstanceAndSurface(m_window);
         const VkPhysicalDevice xrPhysicalDevicePtrGPU = m_openXRUtility.QueryRequiredPhysicalDevice(m_graphicsUtility.Instance());
         m_graphicsUtility.InitDeviceAndCommandPool(xrPhysicalDevicePtrGPU);
-
-        // Phase2A compute smoke-test: one-time invocation to validate existing graphics queue can run compute.
-        {
-            const GraphicsUtility::QueueFamilyIndices queueFamilyIndices = m_graphicsUtility.FindQueueFamilies(m_graphicsUtility.PhysicalDevice());
-            if (queueFamilyIndices.m_graphicsFamily.has_value())
-            {
-                const uint32_t graphicsFamily = queueFamilyIndices.m_graphicsFamily.value();
-                // Query queue family properties to determine compute capability.
-                uint32_t queueFamilyCount = 0;
-                vkGetPhysicalDeviceQueueFamilyProperties(m_graphicsUtility.PhysicalDevice(), &queueFamilyCount, nullptr);
-                if (queueFamilyCount > 0)
-                {
-                    std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
-                    vkGetPhysicalDeviceQueueFamilyProperties(m_graphicsUtility.PhysicalDevice(), &queueFamilyCount, queueFamilies.data());
-                    if (graphicsFamily < queueFamilyCount)
-                    {
-                        const VkQueueFlags flags = queueFamilies[graphicsFamily].queueFlags;
-                        if ((flags & VK_QUEUE_COMPUTE_BIT) == 0)
-                        {
-                            UIUtility::Print("Selected graphics queue family does not support compute;\nPlaneSweep compute smoke test skipped.\n");
-                        }
-                        else
-                        {
-                            UIUtility::Print("Selected graphics queue family supports compute; running PlaneSweep compute smoke test.\n");
-                            PlaneSweepGpu smokeTest;
-                            smokeTest.Initialize(
-                                m_graphicsUtility.Device(),
-                                m_graphicsUtility.PhysicalDevice(),
-                                queueFamilyIndices.m_graphicsFamily.value(),
-                                m_graphicsUtility.GraphicsQueue(),
-                                m_graphicsUtility.CommandPool()
-                            );
-
-                            try
-                            {
-                                // Run only the newest SamplePlaneSweepPixel semantics test at startup.
-                                const bool pixelSamplingOk = smokeTest.RunPlaneSweepPixelSamplingSmokeTest();
-                                if (!pixelSamplingOk)
-                                {
-                                    UIUtility::Print("PlaneSweep GPU SamplePlaneSweepPixel smoke test failed.\n");
-                                }
-                            }
-                            catch (const std::exception &ex)
-                            {
-                                UIUtility::Print(std::string("PlaneSweep GPU smoke test failed: ") + ex.what() + "\n");
-                            }
-
-                            smokeTest.Clean();
-                        }
-                    }
-                }
-            }
-        }
 
         m_sceneSampleCount = m_graphicsUtility.ChooseSampleCount(m_programSetup.m_graphics.m_antiAliasingEnabled, m_programSetup.m_graphics.m_antiAliasingSamples);
         CreateSwapChain();

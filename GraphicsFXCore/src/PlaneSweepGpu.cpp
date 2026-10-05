@@ -405,7 +405,7 @@ PlaneSweepGpu::~PlaneSweepGpu(void)
 	Clean();
 }
 
-void PlaneSweepGpu::Initialize(VkDevice device, VkPhysicalDevice physicalDevice, uint32_t queueFamilyIndex, VkQueue queue, VkCommandPool commandPool)
+void PlaneSweepGpu::Initialize(VkDevice device, VkPhysicalDevice physicalDevice, VkQueue queue, VkCommandPool commandPool)
 {
 	if (m_initialized)
 	{
@@ -414,7 +414,6 @@ void PlaneSweepGpu::Initialize(VkDevice device, VkPhysicalDevice physicalDevice,
 
 	m_device = device;
 	m_physicalDevice = physicalDevice;
-	m_queueFamilyIndex = queueFamilyIndex;
 	m_queue = queue;
 	m_commandPool = commandPool;
 
