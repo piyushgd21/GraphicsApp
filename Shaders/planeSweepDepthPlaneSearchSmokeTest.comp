@@ -1,0 +1,148 @@
+#version 450
+
+layout(local_size_x = 6, local_size_y = 1, local_size_z = 1) in;
+
+struct GpuCameraIntrinsics { int width; int height; float fx; float fy; float cx; float cy; float k1; float k2; float p1; float p2; };
+struct GpuCameraPose { vec4 position; vec4 forward; vec4 up; vec4 right; };
+
+layout(set = 0, binding = 0) uniform sampler2D referenceImage;
+layout(set = 0, binding = 1) uniform sampler2D referenceMask;
+layout(set = 0, binding = 2) uniform sampler2D sourceImages[8];
+layout(set = 0, binding = 3) uniform sampler2D sourceMasks[8];
+layout(set = 0, binding = 4, std430) readonly buffer IntrinsicsBuffer { GpuCameraIntrinsics values[]; } intrinsics;
+layout(set = 0, binding = 5, std430) readonly buffer PosesBuffer { GpuCameraPose values[]; } poses;
+layout(set = 0, binding = 6, std430) readonly buffer ScenarioFloats { float values[]; } scenarioFloats;
+layout(set = 0, binding = 7, std430) readonly buffer ScenarioParameters { uint values[]; } scenarioParameters;
+layout(set = 0, binding = 8, std430) writeonly buffer StatusOutput { uint values[]; } statusOutput;
+layout(set = 0, binding = 9, std430) writeonly buffer FinalDepthOutput { float values[]; } finalDepthOutput;
+layout(set = 0, binding = 10, std430) writeonly buffer BestDepthOutput { float values[]; } bestDepthOutput;
+layout(set = 0, binding = 11, std430) writeonly buffer BestCostOutput { float values[]; } bestCostOutput;
+layout(set = 0, binding = 12, std430) writeonly buffer SecondCostOutput { float values[]; } secondCostOutput;
+layout(set = 0, binding = 13, std430) writeonly buffer BestPlaneOutput { int values[]; } bestPlaneOutput;
+layout(set = 0, binding = 14, std430) writeonly buffer PlaneDepthOutput { float values[]; } planeDepthOutput;
+layout(set = 0, binding = 15, std430) writeonly buffer PlaneValidityOutput { uint values[]; } planeValidityOutput;
+layout(set = 0, binding = 16, std430) writeonly buffer PlaneCostOutput { float values[]; } planeCostOutput;
+
+const float kFloatMax = 3.402823466e+38;
+const uint kNoValidPlane = 0u;
+const uint kCostRejected = 1u;
+const uint kConfidenceRejected = 2u;
+const uint kAccepted = 3u;
+
+bool IsFiniteFloat(float value) { return !isnan(value) && !isinf(value); }
+
+bool SampleBilinearCpuEquivalent(sampler2D image, vec2 pixel, out vec4 color)
+{
+	ivec2 size = textureSize(image, 0);
+	if (size.x <= 0 || size.y <= 0 || pixel.x < 0.0 || pixel.y < 0.0 || pixel.x > float(size.x - 1) || pixel.y > float(size.y - 1)) { color = vec4(0.0); return false; }
+	int x0 = int(floor(pixel.x)); int y0 = int(floor(pixel.y)); int x1 = min(size.x - 1, x0 + 1); int y1 = min(size.y - 1, y0 + 1);
+	float tx = pixel.x - float(x0); float ty = pixel.y - float(y0);
+	vec4 c00 = texelFetch(image, ivec2(x0, y0), 0); vec4 c10 = texelFetch(image, ivec2(x1, y0), 0);
+	vec4 c01 = texelFetch(image, ivec2(x0, y1), 0); vec4 c11 = texelFetch(image, ivec2(x1, y1), 0);
+	vec4 top = (c00 * (1.0 - tx)) + (c10 * tx); vec4 bottom = (c01 * (1.0 - tx)) + (c11 * tx);
+	color = (top * (1.0 - ty)) + (bottom * ty); return true;
+}
+
+bool SamplePlaneSweepPixelCpuEquivalent(sampler2D image, sampler2D mask, vec2 pixel, bool hasMask, bool maskUsesAlpha, out vec4 color)
+{
+	if (!SampleBilinearCpuEquivalent(image, pixel, color)) return false;
+	if (!hasMask) return true;
+	ivec2 imageSize = textureSize(image, 0); ivec2 maskSize = textureSize(mask, 0);
+	float imageWidth = float(max(1, imageSize.x - 1)); float imageHeight = float(max(1, imageSize.y - 1));
+	float maskWidth = float(max(1, maskSize.x - 1)); float maskHeight = float(max(1, maskSize.y - 1));
+	vec2 maskPixel = vec2((pixel.x / imageWidth) * maskWidth, (pixel.y / imageHeight) * maskHeight);
+	vec4 maskColor; if (!SampleBilinearCpuEquivalent(mask, maskPixel, maskColor)) return false;
+	color.a = maskUsesAlpha ? maskColor.a : (maskColor.r * 0.299) + (maskColor.g * 0.587) + (maskColor.b * 0.114); return true;
+}
+
+bool SampleScenarioSource(uint scenarioIndex, vec2 pixel, out vec4 color)
+{
+	switch (scenarioIndex)
+	{
+		case 0u: return SamplePlaneSweepPixelCpuEquivalent(sourceImages[0], sourceMasks[0], pixel, false, false, color);
+		case 1u: return SamplePlaneSweepPixelCpuEquivalent(sourceImages[1], sourceMasks[1], pixel, false, false, color);
+		case 2u: return SamplePlaneSweepPixelCpuEquivalent(sourceImages[2], sourceMasks[2], pixel, false, false, color);
+		case 3u: return SamplePlaneSweepPixelCpuEquivalent(sourceImages[3], sourceMasks[3], pixel, false, false, color);
+		case 4u: return SamplePlaneSweepPixelCpuEquivalent(sourceImages[4], sourceMasks[4], pixel, false, false, color);
+		case 5u: return SamplePlaneSweepPixelCpuEquivalent(sourceImages[5], sourceMasks[5], pixel, false, false, color);
+		default: color = vec4(0.0); return false;
+	}
+}
+
+vec3 UnprojectPixelCpuEquivalent(GpuCameraPose camera, GpuCameraIntrinsics intrinsic, float x, float y, float depth)
+{
+	float targetX = (x + 0.5 - intrinsic.cx) / intrinsic.fx; float targetY = (y + 0.5 - intrinsic.cy) / intrinsic.fy;
+	float localX = targetX; float localY = targetY;
+	for (int iteration = 0; iteration < 5; ++iteration)
+	{
+		float radiusSquared = (localX * localX) + (localY * localY);
+		float radial = 1.0 + intrinsic.k1 * radiusSquared + intrinsic.k2 * radiusSquared * radiusSquared;
+		float distortedX = (localX * radial) + (2.0 * intrinsic.p1 * localX * localY) + (intrinsic.p2 * (radiusSquared + (2.0 * localX * localX)));
+		float distortedY = (localY * radial) + (intrinsic.p1 * (radiusSquared + (2.0 * localY * localY))) + (2.0 * intrinsic.p2 * localX * localY);
+		localX += targetX - distortedX; localY += targetY - distortedY;
+	}
+	return camera.position.xyz + camera.right.xyz * (localX * depth) - camera.up.xyz * (localY * depth) + camera.forward.xyz * depth;
+}
+
+bool ProjectPointCpuEquivalent(GpuCameraPose camera, GpuCameraIntrinsics intrinsic, vec3 point, out float x, out float y, out float depth)
+{
+	precise vec3 offset = point - camera.position.xyz;
+	precise float depthXY = (offset.x * camera.forward.x) + (offset.y * camera.forward.y); depth = depthXY + (offset.z * camera.forward.z);
+	if (depth <= 0.0001) { x = 0.0; y = 0.0; return false; }
+	precise float localXNumeratorXY = (offset.x * camera.right.x) + (offset.y * camera.right.y);
+	precise float localX = (localXNumeratorXY + (offset.z * camera.right.z)) / depth;
+	precise float localYNumeratorXY = (offset.x * camera.up.x) + (offset.y * camera.up.y);
+	precise float localYNumerator = localYNumeratorXY + (offset.z * camera.up.z); precise float localY = (-localYNumerator) / depth;
+	precise float radiusSquared = (localX * localX) + (localY * localY);
+	precise float radial = 1.0 + (intrinsic.k1 * radiusSquared) + (intrinsic.k2 * radiusSquared * radiusSquared);
+	precise float distortedX = (localX * radial) + (2.0 * intrinsic.p1 * localX * localY) + (intrinsic.p2 * (radiusSquared + (2.0 * localX * localX)));
+	precise float distortedY = (localY * radial) + (intrinsic.p1 * (radiusSquared + (2.0 * localY * localY))) + (2.0 * intrinsic.p2 * localX * localY);
+	x = (intrinsic.fx * distortedX) + intrinsic.cx; y = (intrinsic.fy * distortedY) + intrinsic.cy;
+	return IsFiniteFloat(x) && IsFiniteFloat(y) && IsFiniteFloat(depth);
+}
+
+bool ComputeSingleSourceCostForScenario(uint scenarioIndex, float referenceX, float referenceY, float depth, float alphaThreshold, out float cost)
+{
+	vec4 referenceColor;
+	if (!SamplePlaneSweepPixelCpuEquivalent(referenceImage, referenceMask, vec2(referenceX, referenceY), false, false, referenceColor) || referenceColor.a <= alphaThreshold) { cost = 0.0; return false; }
+	vec3 point = UnprojectPixelCpuEquivalent(poses.values[0], intrinsics.values[0], referenceX, referenceY, depth);
+	float sourceX; float sourceY; float sourceDepth;
+	if (!ProjectPointCpuEquivalent(poses.values[1], intrinsics.values[1], point, sourceX, sourceY, sourceDepth)) { cost = 0.0; return false; }
+	vec4 sourceColor;
+	if (!SampleScenarioSource(scenarioIndex, vec2(sourceX, sourceY), sourceColor) || sourceColor.a <= alphaThreshold) { cost = 0.0; return false; }
+	cost = (abs(referenceColor.r - sourceColor.r) + abs(referenceColor.g - sourceColor.g) + abs(referenceColor.b - sourceColor.b)) / 3.0;
+	return IsFiniteFloat(cost);
+}
+
+void main()
+{
+	uint scenarioIndex = gl_GlobalInvocationID.x;
+	if (scenarioIndex >= 6u) return;
+	uint floatOffset = scenarioIndex * 8u; uint uintOffset = scenarioIndex * 4u; uint planeOffset = scenarioIndex * 4u;
+	float referenceX = scenarioFloats.values[floatOffset]; float referenceY = scenarioFloats.values[floatOffset + 1u];
+	float inverseNear = scenarioFloats.values[floatOffset + 2u]; float inverseFar = scenarioFloats.values[floatOffset + 3u];
+	float costThreshold = scenarioFloats.values[floatOffset + 4u]; float confidenceMinimumDifference = scenarioFloats.values[floatOffset + 5u];
+	float alphaThreshold = scenarioFloats.values[floatOffset + 6u]; float minimumOpaquePatchRatio = scenarioFloats.values[floatOffset + 7u];
+	uint planeCount = scenarioParameters.values[uintOffset]; uint confidenceEnabled = scenarioParameters.values[uintOffset + 1u]; uint patchRadius = scenarioParameters.values[uintOffset + 2u];
+	float bestCost = kFloatMax; float secondBestCost = kFloatMax; float bestDepth = 0.0; int bestPlaneIndex = -1;
+	for (uint planeIndex = 0u; planeIndex < planeCount; ++planeIndex)
+	{
+		float t = planeCount <= 1u ? 0.0 : float(planeIndex) / float(planeCount - 1u);
+		float inverseDepth = (inverseNear * (1.0 - t)) + (inverseFar * t);
+		float depth = 1.0 / max(inverseDepth, 0.000001);
+		float cost = 0.0; bool hasCost = ComputeSingleSourceCostForScenario(scenarioIndex, referenceX, referenceY, depth, alphaThreshold, cost);
+		uint diagnosticIndex = planeOffset + planeIndex;
+		planeDepthOutput.values[diagnosticIndex] = depth; planeValidityOutput.values[diagnosticIndex] = hasCost ? 1u : 0u; planeCostOutput.values[diagnosticIndex] = hasCost ? cost : 0.0;
+		if (hasCost && cost < bestCost) { secondBestCost = bestCost; bestCost = cost; bestDepth = depth; bestPlaneIndex = int(planeIndex); }
+		else if (hasCost && IsFiniteFloat(cost) && cost < secondBestCost) { secondBestCost = cost; }
+	}
+	uint status = kNoValidPlane; float finalDepth = 0.0;
+	if (bestDepth > 0.0)
+	{
+		if (bestCost > costThreshold) status = kCostRejected;
+		else if (confidenceEnabled != 0u && (!IsFiniteFloat(secondBestCost) || (secondBestCost - bestCost) < max(0.0, confidenceMinimumDifference))) status = kConfidenceRejected;
+		else { status = kAccepted; finalDepth = bestDepth; }
+	}
+	statusOutput.values[scenarioIndex] = status; finalDepthOutput.values[scenarioIndex] = finalDepth;
+	bestDepthOutput.values[scenarioIndex] = bestDepth; bestCostOutput.values[scenarioIndex] = bestCost; secondCostOutput.values[scenarioIndex] = secondBestCost; bestPlaneOutput.values[scenarioIndex] = bestPlaneIndex;
+}

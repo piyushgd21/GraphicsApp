@@ -54,6 +54,23 @@ namespace graphicsFX
 			const std::vector<uint32_t> &expectedValidity,
 			const std::vector<float> &expectedCosts
 		);
+		bool RunDepthPlaneSearchSmokeTest(
+			const std::vector<uint8_t> &referencePixels,
+			const std::vector<std::vector<uint8_t>> &scenarioSourcePixels,
+			const std::vector<GpuCameraIntrinsics> &intrinsics,
+			const std::vector<GpuCameraPose> &poses,
+			const std::vector<float> &scenarioFloats,
+			const std::vector<uint32_t> &scenarioParameters,
+			const std::vector<float> &expectedPlaneDepths,
+			const std::vector<uint32_t> &expectedPlaneValidity,
+			const std::vector<float> &expectedPlaneCosts,
+			const std::vector<uint32_t> &expectedStatuses,
+			const std::vector<float> &expectedFinalDepths,
+			const std::vector<float> &expectedBestDepths,
+			const std::vector<float> &expectedBestCosts,
+			const std::vector<float> &expectedSecondBestCosts,
+			const std::vector<int32_t> &expectedBestPlanes
+		);
 		bool RunMultiSourceCostSmokeTest(
 			const std::vector<uint8_t> &referencePixels,
 			const std::vector<uint8_t> &source0Pixels,

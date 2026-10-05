@@ -1476,6 +1476,140 @@ bool PlaneSweepGpu::RunMultiSourceCostSmokeTest(
 	catch (const std::exception &ex) { cleanup(); UIUtility::Print(std::string("PlaneSweep GPU multi-source ComputePlaneCost failed: ") + ex.what() + "\n"); return false; }
 }
 
+bool PlaneSweepGpu::RunDepthPlaneSearchSmokeTest(
+	const std::vector<uint8_t> &referencePixels,
+	const std::vector<std::vector<uint8_t>> &scenarioSourcePixels,
+	const std::vector<GpuCameraIntrinsics> &intrinsics,
+	const std::vector<GpuCameraPose> &poses,
+	const std::vector<float> &scenarioFloats,
+	const std::vector<uint32_t> &scenarioParameters,
+	const std::vector<float> &expectedPlaneDepths,
+	const std::vector<uint32_t> &expectedPlaneValidity,
+	const std::vector<float> &expectedPlaneCosts,
+	const std::vector<uint32_t> &expectedStatuses,
+	const std::vector<float> &expectedFinalDepths,
+	const std::vector<float> &expectedBestDepths,
+	const std::vector<float> &expectedBestCosts,
+	const std::vector<float> &expectedSecondBestCosts,
+	const std::vector<int32_t> &expectedBestPlanes)
+{
+	if (!m_initialized) throw std::runtime_error("PlaneSweepGpu not initialized.");
+	constexpr uint32_t kScenarios = 6;
+	constexpr uint32_t kPlanes = 4;
+	constexpr uint32_t kImages = 8;
+	constexpr VkDeviceSize kImageBytes = 8 * 4;
+	constexpr VkFormat kFormat = VK_FORMAT_R8G8B8A8_UNORM;
+	if (referencePixels.size() != 4 || scenarioSourcePixels.size() != kScenarios || intrinsics.size() != 2 || poses.size() != 2 ||
+		scenarioFloats.size() != kScenarios * 8 || scenarioParameters.size() != kScenarios * 4 || expectedPlaneDepths.size() != kScenarios * kPlanes ||
+		expectedPlaneValidity.size() != kScenarios * kPlanes || expectedPlaneCosts.size() != kScenarios * kPlanes || expectedStatuses.size() != kScenarios ||
+		expectedFinalDepths.size() != kScenarios || expectedBestDepths.size() != kScenarios || expectedBestCosts.size() != kScenarios ||
+		expectedSecondBestCosts.size() != kScenarios || expectedBestPlanes.size() != kScenarios)
+		throw std::invalid_argument("Depth-plane search smoke test received invalid input dimensions.");
+	for (const auto &pixels : scenarioSourcePixels) if (pixels.size() != kImageBytes) throw std::invalid_argument("Depth-plane search scenario source image must be 8x1 RGBA8.");
+	for (uint32_t i = 0; i < kScenarios; ++i) if (scenarioParameters[i * 4] != kPlanes) throw std::invalid_argument("Depth-plane search requires exactly four planes per scenario.");
+	VkFormatProperties formatProperties{}; vkGetPhysicalDeviceFormatProperties(m_physicalDevice, kFormat, &formatProperties);
+	if ((formatProperties.optimalTilingFeatures & (VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) != (VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT))
+	{
+		UIUtility::Print("Depth-plane search smoke test unsupported: RGBA8 optimal tiling lacks sampled-image or transfer-destination support.\n"); return false;
+	}
+	VkPhysicalDeviceProperties deviceProperties{}; vkGetPhysicalDeviceProperties(m_physicalDevice, &deviceProperties);
+	const VkPhysicalDeviceLimits &limits = deviceProperties.limits;
+	if (limits.maxPerStageDescriptorSamplers < 18 || limits.maxPerStageDescriptorSampledImages < 18 || limits.maxPerStageDescriptorStorageBuffers < 13 ||
+		limits.maxDescriptorSetSamplers < 18 || limits.maxDescriptorSetSampledImages < 18 || limits.maxDescriptorSetStorageBuffers < 13 || limits.maxPerStageResources < 31)
+	{
+		UIUtility::Print("Depth-plane search smoke test unsupported: device descriptor limits are below 18 sampled images/samplers, 13 storage buffers, or 31 total per-stage resources.\n"); return false;
+	}
+	const VkDeviceSize stagingBytes = kImageBytes * 7 + 4;
+	const std::array<const void *, 4> inputData{{ intrinsics.data(), poses.data(), scenarioFloats.data(), scenarioParameters.data() }};
+	const std::array<VkDeviceSize, 4> inputSizes{{ 2 * sizeof(GpuCameraIntrinsics), 2 * sizeof(GpuCameraPose), scenarioFloats.size() * sizeof(float), scenarioParameters.size() * sizeof(uint32_t) }};
+	const std::array<VkDeviceSize, 9> outputSizes{{ kScenarios * sizeof(uint32_t), kScenarios * sizeof(float), kScenarios * sizeof(float), kScenarios * sizeof(float), kScenarios * sizeof(float), kScenarios * sizeof(int32_t), kScenarios * kPlanes * sizeof(float), kScenarios * kPlanes * sizeof(uint32_t), kScenarios * kPlanes * sizeof(float) }};
+	VkBuffer imageStaging = VK_NULL_HANDLE; VkDeviceMemory imageStagingMemory = VK_NULL_HANDLE;
+	std::array<VkImage, kImages> images{}; std::array<VkDeviceMemory, kImages> imageMemories{}; std::array<VkImageView, kImages> imageViews{};
+	VkSampler sampler = VK_NULL_HANDLE; std::array<VkBuffer, 4> inputStaging{}, inputBuffers{}; std::array<VkDeviceMemory, 4> inputStagingMemories{}, inputMemories{};
+	std::array<VkBuffer, 9> outputBuffers{}, readbackBuffers{}; std::array<VkDeviceMemory, 9> outputMemories{}, readbackMemories{};
+	VkDescriptorSetLayout setLayout = VK_NULL_HANDLE; VkDescriptorPool pool = VK_NULL_HANDLE; VkDescriptorSet set = VK_NULL_HANDLE;
+	VkPipelineLayout pipelineLayout = VK_NULL_HANDLE; VkShaderModule shader = VK_NULL_HANDLE; VkPipeline pipeline = VK_NULL_HANDLE;
+	VkCommandBuffer commandBuffer = VK_NULL_HANDLE; VkFence fence = VK_NULL_HANDLE; bool submitted = false;
+	auto cleanup = [&]()
+	{
+		if (submitted) { vkDeviceWaitIdle(m_device); submitted = false; }
+		if (fence) vkDestroyFence(m_device, fence, nullptr); if (commandBuffer) vkFreeCommandBuffers(m_device, m_commandPool, 1, &commandBuffer);
+		if (pipeline) vkDestroyPipeline(m_device, pipeline, nullptr); if (shader) vkDestroyShaderModule(m_device, shader, nullptr); if (pipelineLayout) vkDestroyPipelineLayout(m_device, pipelineLayout, nullptr);
+		if (pool) vkDestroyDescriptorPool(m_device, pool, nullptr); if (setLayout) vkDestroyDescriptorSetLayout(m_device, setLayout, nullptr); if (sampler) vkDestroySampler(m_device, sampler, nullptr);
+		for (uint32_t i = 0; i < kImages; ++i) { if (imageViews[i]) vkDestroyImageView(m_device, imageViews[i], nullptr); if (images[i]) vkDestroyImage(m_device, images[i], nullptr); if (imageMemories[i]) vkFreeMemory(m_device, imageMemories[i], nullptr); }
+		auto destroyBuffer = [&](VkBuffer &buffer, VkDeviceMemory &memory) { if (buffer) vkDestroyBuffer(m_device, buffer, nullptr); if (memory) vkFreeMemory(m_device, memory, nullptr); buffer = VK_NULL_HANDLE; memory = VK_NULL_HANDLE; };
+		destroyBuffer(imageStaging, imageStagingMemory);
+		for (uint32_t i = 0; i < 4; ++i) { destroyBuffer(inputStaging[i], inputStagingMemories[i]); destroyBuffer(inputBuffers[i], inputMemories[i]); }
+		for (uint32_t i = 0; i < 9; ++i) { destroyBuffer(outputBuffers[i], outputMemories[i]); destroyBuffer(readbackBuffers[i], readbackMemories[i]); }
+	};
+	auto findMemory = [&](uint32_t bits, VkMemoryPropertyFlags flags) { VkPhysicalDeviceMemoryProperties p{}; vkGetPhysicalDeviceMemoryProperties(m_physicalDevice, &p); for (uint32_t i = 0; i < p.memoryTypeCount; ++i) if ((bits & (1u << i)) && (p.memoryTypes[i].propertyFlags & flags) == flags) return i; return UINT32_MAX; };
+	auto makeBuffer = [&](VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags flags, VkBuffer &buffer, VkDeviceMemory &memory) { VkBufferCreateInfo ci{}; ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO; ci.size = size; ci.usage = usage; ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE; if (vkCreateBuffer(m_device, &ci, nullptr, &buffer) != VK_SUCCESS) throw std::runtime_error("Failed to create depth-plane buffer."); VkMemoryRequirements req{}; vkGetBufferMemoryRequirements(m_device, buffer, &req); uint32_t type = findMemory(req.memoryTypeBits, flags); if (type == UINT32_MAX) throw std::runtime_error("No memory type for depth-plane buffer."); VkMemoryAllocateInfo ai{}; ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO; ai.allocationSize = req.size; ai.memoryTypeIndex = type; if (vkAllocateMemory(m_device, &ai, nullptr, &memory) != VK_SUCCESS || vkBindBufferMemory(m_device, buffer, memory, 0) != VK_SUCCESS) throw std::runtime_error("Failed to allocate depth-plane buffer memory."); };
+	try
+	{
+		const VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+		makeBuffer(stagingBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, host, imageStaging, imageStagingMemory);
+		void *mapped = nullptr; if (vkMapMemory(m_device, imageStagingMemory, 0, stagingBytes, 0, &mapped) != VK_SUCCESS) throw std::runtime_error("Failed to map depth-plane image staging.");
+		std::memcpy(mapped, referencePixels.data(), 4); for (uint32_t i = 0; i < kScenarios; ++i) std::memcpy(static_cast<uint8_t *>(mapped) + kImageBytes * (i + 1), scenarioSourcePixels[i].data(), static_cast<size_t>(kImageBytes));
+		const std::array<uint8_t, 4> dummy{{0, 0, 0, 255}}; std::memcpy(static_cast<uint8_t *>(mapped) + kImageBytes * 7, dummy.data(), dummy.size()); vkUnmapMemory(m_device, imageStagingMemory);
+		for (uint32_t i = 0; i < kImages; ++i)
+		{
+			VkImageCreateInfo ci{}; ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO; ci.imageType = VK_IMAGE_TYPE_2D; ci.format = kFormat; ci.extent = (i == 0 || i == 7) ? VkExtent3D{1, 1, 1} : VkExtent3D{8, 1, 1}; ci.mipLevels = 1; ci.arrayLayers = 1; ci.samples = VK_SAMPLE_COUNT_1_BIT; ci.tiling = VK_IMAGE_TILING_OPTIMAL; ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT; ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE; ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+			if (vkCreateImage(m_device, &ci, nullptr, &images[i]) != VK_SUCCESS) throw std::runtime_error("Failed to create depth-plane image."); VkMemoryRequirements req{}; vkGetImageMemoryRequirements(m_device, images[i], &req); uint32_t type = findMemory(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT); if (type == UINT32_MAX) throw std::runtime_error("No device-local memory for depth-plane image."); VkMemoryAllocateInfo ai{}; ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO; ai.allocationSize = req.size; ai.memoryTypeIndex = type; if (vkAllocateMemory(m_device, &ai, nullptr, &imageMemories[i]) != VK_SUCCESS || vkBindImageMemory(m_device, images[i], imageMemories[i], 0) != VK_SUCCESS) throw std::runtime_error("Failed to allocate depth-plane image.");
+			VkImageViewCreateInfo vi{}; vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO; vi.image = images[i]; vi.viewType = VK_IMAGE_VIEW_TYPE_2D; vi.format = kFormat; vi.subresourceRange = VkImageSubresourceRange{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}; if (vkCreateImageView(m_device, &vi, nullptr, &imageViews[i]) != VK_SUCCESS) throw std::runtime_error("Failed to create depth-plane image view.");
+		}
+		VkSamplerCreateInfo si{}; si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO; si.magFilter = VK_FILTER_NEAREST; si.minFilter = VK_FILTER_NEAREST; si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST; si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE; si.anisotropyEnable = VK_FALSE; si.compareEnable = VK_FALSE; si.minLod = 0.0f; si.maxLod = 0.0f; if (vkCreateSampler(m_device, &si, nullptr, &sampler) != VK_SUCCESS) throw std::runtime_error("Failed to create depth-plane sampler.");
+		for (uint32_t i = 0; i < 4; ++i) { makeBuffer(inputSizes[i], VK_BUFFER_USAGE_TRANSFER_SRC_BIT, host, inputStaging[i], inputStagingMemories[i]); if (vkMapMemory(m_device, inputStagingMemories[i], 0, inputSizes[i], 0, &mapped) != VK_SUCCESS) throw std::runtime_error("Failed to map depth-plane input staging."); std::memcpy(mapped, inputData[i], static_cast<size_t>(inputSizes[i])); vkUnmapMemory(m_device, inputStagingMemories[i]); makeBuffer(inputSizes[i], VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, inputBuffers[i], inputMemories[i]); }
+		for (uint32_t i = 0; i < 9; ++i) { makeBuffer(outputSizes[i], VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, outputBuffers[i], outputMemories[i]); makeBuffer(outputSizes[i], VK_BUFFER_USAGE_TRANSFER_DST_BIT, host, readbackBuffers[i], readbackMemories[i]); }
+		std::array<VkDescriptorSetLayoutBinding, 17> bindings{}; for (uint32_t i = 0; i < bindings.size(); ++i) { bindings[i].binding = i; bindings[i].descriptorType = i < 4 ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; bindings[i].descriptorCount = (i == 2 || i == 3) ? 8 : 1; bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT; }
+		VkDescriptorSetLayoutCreateInfo lci{}; lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO; lci.bindingCount = static_cast<uint32_t>(bindings.size()); lci.pBindings = bindings.data(); if (vkCreateDescriptorSetLayout(m_device, &lci, nullptr, &setLayout) != VK_SUCCESS) throw std::runtime_error("Failed to create depth-plane descriptor layout.");
+		std::array<VkDescriptorPoolSize, 2> poolSizes{{ {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 18}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 13} }}; VkDescriptorPoolCreateInfo pci{}; pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO; pci.maxSets = 1; pci.poolSizeCount = static_cast<uint32_t>(poolSizes.size()); pci.pPoolSizes = poolSizes.data(); if (vkCreateDescriptorPool(m_device, &pci, nullptr, &pool) != VK_SUCCESS) throw std::runtime_error("Failed to create depth-plane descriptor pool.");
+		VkDescriptorSetAllocateInfo sai{}; sai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO; sai.descriptorPool = pool; sai.descriptorSetCount = 1; sai.pSetLayouts = &setLayout; if (vkAllocateDescriptorSets(m_device, &sai, &set) != VK_SUCCESS) throw std::runtime_error("Failed to allocate depth-plane descriptor set.");
+		std::array<VkDescriptorImageInfo, 1> referenceInfo{{{sampler, imageViews[0], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}}}, dummyInfo{{{sampler, imageViews[7], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}}};
+		std::array<VkDescriptorImageInfo, 8> sourceInfos{}, maskInfos{}; for (uint32_t i = 0; i < 8; ++i) { sourceInfos[i] = {sampler, i < 6 ? imageViews[i + 1] : imageViews[7], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}; maskInfos[i] = {sampler, imageViews[7], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}; }
+		std::array<VkDescriptorBufferInfo, 13> bufferInfos{}; for (uint32_t i = 0; i < 4; ++i) bufferInfos[i] = {inputBuffers[i], 0, inputSizes[i]}; for (uint32_t i = 0; i < 9; ++i) bufferInfos[4 + i] = {outputBuffers[i], 0, outputSizes[i]};
+		std::array<VkWriteDescriptorSet, 17> writes{}; for (uint32_t i = 0; i < writes.size(); ++i) { writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; writes[i].dstSet = set; writes[i].dstBinding = i; writes[i].descriptorType = i < 4 ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; }
+		writes[0].descriptorCount = 1; writes[0].pImageInfo = referenceInfo.data(); writes[1].descriptorCount = 1; writes[1].pImageInfo = dummyInfo.data(); writes[2].descriptorCount = 8; writes[2].pImageInfo = sourceInfos.data(); writes[3].descriptorCount = 8; writes[3].pImageInfo = maskInfos.data(); for (uint32_t i = 0; i < 13; ++i) { writes[4 + i].descriptorCount = 1; writes[4 + i].pBufferInfo = &bufferInfos[i]; } vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+		const std::vector<char> code = ReadShaderFile("shaders/planeSweepDepthPlaneSearchSmokeTest.comp.spv"); if (code.empty()) throw std::runtime_error("Failed to load depth-plane search SPIR-V."); VkShaderModuleCreateInfo sci{}; sci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO; sci.codeSize = code.size(); sci.pCode = reinterpret_cast<const uint32_t *>(code.data()); if (vkCreateShaderModule(m_device, &sci, nullptr, &shader) != VK_SUCCESS) throw std::runtime_error("Failed to create depth-plane shader.");
+		VkPipelineLayoutCreateInfo pli{}; pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO; pli.setLayoutCount = 1; pli.pSetLayouts = &setLayout; if (vkCreatePipelineLayout(m_device, &pli, nullptr, &pipelineLayout) != VK_SUCCESS) throw std::runtime_error("Failed to create depth-plane pipeline layout."); VkPipelineShaderStageCreateInfo stage{}; stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO; stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; stage.module = shader; stage.pName = "main"; VkComputePipelineCreateInfo cpci{}; cpci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO; cpci.stage = stage; cpci.layout = pipelineLayout; if (vkCreateComputePipelines(m_device, VK_NULL_HANDLE, 1, &cpci, nullptr, &pipeline) != VK_SUCCESS) throw std::runtime_error("Failed to create depth-plane pipeline.");
+		VkCommandBufferAllocateInfo cai{}; cai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO; cai.commandPool = m_commandPool; cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; cai.commandBufferCount = 1; if (vkAllocateCommandBuffers(m_device, &cai, &commandBuffer) != VK_SUCCESS) throw std::runtime_error("Failed to allocate depth-plane command buffer."); VkCommandBufferBeginInfo cbi{}; cbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO; cbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT; if (vkBeginCommandBuffer(commandBuffer, &cbi) != VK_SUCCESS) throw std::runtime_error("Failed to begin depth-plane command buffer.");
+		std::array<VkImageMemoryBarrier, kImages> imageToTransfer{}; for (uint32_t i = 0; i < kImages; ++i) { auto &b = imageToTransfer[i]; b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER; b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; b.image = images[i]; b.subresourceRange = VkImageSubresourceRange{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}; } vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, kImages, imageToTransfer.data());
+		for (uint32_t i = 0; i < kImages; ++i) { VkBufferImageCopy copy{}; copy.bufferOffset = i == 0 ? 0 : kImageBytes * i; copy.imageSubresource = VkImageSubresourceLayers{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; copy.imageExtent = (i == 0 || i == 7) ? VkExtent3D{1, 1, 1} : VkExtent3D{8, 1, 1}; vkCmdCopyBufferToImage(commandBuffer, imageStaging, images[i], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy); }
+		std::array<VkImageMemoryBarrier, kImages> imageToRead{}; for (uint32_t i = 0; i < kImages; ++i) { auto &b = imageToRead[i]; b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER; b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT; b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; b.image = images[i]; b.subresourceRange = VkImageSubresourceRange{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}; } vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, kImages, imageToRead.data());
+		for (uint32_t i = 0; i < 4; ++i) { VkBufferCopy copy{}; copy.size = inputSizes[i]; vkCmdCopyBuffer(commandBuffer, inputStaging[i], inputBuffers[i], 1, &copy); } std::array<VkBufferMemoryBarrier, 4> inputBarriers{}; for (uint32_t i = 0; i < 4; ++i) { auto &b = inputBarriers[i]; b.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER; b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT; b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; b.buffer = inputBuffers[i]; b.size = inputSizes[i]; } vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 4, inputBarriers.data(), 0, nullptr);
+		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline); vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &set, 0, nullptr); vkCmdDispatch(commandBuffer, 1, 1, 1);
+		std::array<VkBufferMemoryBarrier, 9> outputBarriers{}; for (uint32_t i = 0; i < 9; ++i) { auto &b = outputBarriers[i]; b.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER; b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT; b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT; b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; b.buffer = outputBuffers[i]; b.size = outputSizes[i]; } vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 9, outputBarriers.data(), 0, nullptr);
+		for (uint32_t i = 0; i < 9; ++i) { VkBufferCopy copy{}; copy.size = outputSizes[i]; vkCmdCopyBuffer(commandBuffer, outputBuffers[i], readbackBuffers[i], 1, &copy); } std::array<VkBufferMemoryBarrier, 9> hostBarriers{}; for (uint32_t i = 0; i < 9; ++i) { auto &b = hostBarriers[i]; b.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER; b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; b.dstAccessMask = VK_ACCESS_HOST_READ_BIT; b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; b.buffer = readbackBuffers[i]; b.size = outputSizes[i]; } vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 9, hostBarriers.data(), 0, nullptr);
+		if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) throw std::runtime_error("Failed to end depth-plane command buffer."); VkFenceCreateInfo fi{}; fi.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO; if (vkCreateFence(m_device, &fi, nullptr, &fence) != VK_SUCCESS) throw std::runtime_error("Failed to create depth-plane fence."); VkSubmitInfo submit{}; submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO; submit.commandBufferCount = 1; submit.pCommandBuffers = &commandBuffer; if (vkQueueSubmit(m_queue, 1, &submit, fence) != VK_SUCCESS) throw std::runtime_error("Failed to submit depth-plane search."); submitted = true; if (vkWaitForFences(m_device, 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) throw std::runtime_error("Failed waiting for depth-plane fence."); submitted = false;
+		std::array<uint32_t, kScenarios> gpuStatuses{}; std::array<uint32_t, kScenarios * kPlanes> gpuPlaneValidity{}; std::array<float, kScenarios> gpuFinalDepths{}, gpuBestDepths{}, gpuBestCosts{}, gpuSecondBestCosts{}; std::array<int32_t, kScenarios> gpuBestPlane{}; std::array<float, kScenarios * kPlanes> gpuPlaneDepths{}, gpuPlaneCosts{};
+		std::array<void *, 9> targets{{gpuStatuses.data(), gpuFinalDepths.data(), gpuBestDepths.data(), gpuBestCosts.data(), gpuSecondBestCosts.data(), gpuBestPlane.data(), gpuPlaneDepths.data(), gpuPlaneValidity.data(), gpuPlaneCosts.data()}};
+		for (uint32_t i = 0; i < 9; ++i) { if (vkMapMemory(m_device, readbackMemories[i], 0, outputSizes[i], 0, &mapped) != VK_SUCCESS) throw std::runtime_error("Failed to map depth-plane readback."); std::memcpy(targets[i], mapped, static_cast<size_t>(outputSizes[i])); vkUnmapMemory(m_device, readbackMemories[i]); }
+		constexpr uint32_t kCostRejected = 1u;
+		constexpr uint32_t kConfidenceRejected = 2u;
+		constexpr uint32_t kAccepted = 3u;
+		constexpr float kTolerance = 1e-6f; float maximumDepthError = 0.0f, maximumCostError = 0.0f, maximumFinalDepthError = 0.0f; uint32_t validPlaneCount = 0; bool tieOrderingMatched = true, thresholdRejected = gpuStatuses[1] == kCostRejected, confidenceRejected = gpuStatuses[2] == kConfidenceRejected;
+		for (uint32_t i = 0; i < kScenarios; ++i)
+		{
+			if (gpuStatuses[i] != expectedStatuses[i] || gpuBestPlane[i] != expectedBestPlanes[i] || std::fabs(gpuFinalDepths[i] - expectedFinalDepths[i]) > kTolerance || std::fabs(gpuBestDepths[i] - expectedBestDepths[i]) > kTolerance || std::fabs(gpuBestCosts[i] - expectedBestCosts[i]) > kTolerance || std::fabs(gpuSecondBestCosts[i] - expectedSecondBestCosts[i]) > kTolerance)
+			{
+				UIUtility::Print("Depth-plane selection mismatch case=" + std::to_string(i) + ", status=" + std::to_string(gpuStatuses[i]) + ", bestPlane=" + std::to_string(gpuBestPlane[i]) + ", bestDepth=" + std::to_string(gpuBestDepths[i]) + ", bestCost=" + std::to_string(gpuBestCosts[i]) + ", secondBestCost=" + std::to_string(gpuSecondBestCosts[i]) + ", finalDepth=" + std::to_string(gpuFinalDepths[i]) + ".\n"); cleanup(); return false;
+			}
+			maximumFinalDepthError = std::max(maximumFinalDepthError, std::fabs(gpuFinalDepths[i] - expectedFinalDepths[i]));
+			for (uint32_t p = 0; p < kPlanes; ++p)
+			{
+				const uint32_t index = i * kPlanes + p; const float depthError = std::fabs(gpuPlaneDepths[index] - expectedPlaneDepths[index]); maximumDepthError = std::max(maximumDepthError, depthError);
+				if (depthError > kTolerance || gpuPlaneValidity[index] != expectedPlaneValidity[index]) { UIUtility::Print("Depth-plane diagnostic mismatch case=" + std::to_string(i) + ", plane=" + std::to_string(p) + ", CPU depth=" + std::to_string(expectedPlaneDepths[index]) + ", GPU depth=" + std::to_string(gpuPlaneDepths[index]) + ", CPU valid=" + std::to_string(expectedPlaneValidity[index]) + ", GPU valid=" + std::to_string(gpuPlaneValidity[index]) + ".\n"); cleanup(); return false; }
+				if (expectedPlaneValidity[index]) { ++validPlaneCount; const float error = std::fabs(gpuPlaneCosts[index] - expectedPlaneCosts[index]); maximumCostError = std::max(maximumCostError, error); if (error > kTolerance) { UIUtility::Print("Depth-plane cost mismatch case=" + std::to_string(i) + ", plane=" + std::to_string(p) + ", CPU=" + std::to_string(expectedPlaneCosts[index]) + ", GPU=" + std::to_string(gpuPlaneCosts[index]) + ".\n"); cleanup(); return false; } }
+			}
+			if ((i == 2 || i == 5) && gpuBestPlane[i] != 2) tieOrderingMatched = false;
+		}
+		if (!tieOrderingMatched || !thresholdRejected || !confidenceRejected) { UIUtility::Print("Depth-plane strict tie/threshold/confidence diagnostics failed.\n"); cleanup(); return false; }
+		UIUtility::Print("PlaneSweep GPU depth-plane search smoke test succeeded:\n6 / 6 final depth results matched CPU BuildReferencePoints.\n24 / 24 plane depths matched inverse-depth CPU interpolation.\n24 / 24 plane validity results matched CPU ComputePlaneCost.\n" + std::to_string(validPlaneCount) + " / " + std::to_string(validPlaneCount) + " valid plane costs matched.\n6 / 6 best/second-best selections matched.\nTie ordering matched strict CPU '<' semantics.\nCost-threshold rejection matched.\nConfidence rejection matched.\nMaximum plane-depth absolute error: " + std::to_string(maximumDepthError) + "\nMaximum valid plane-cost absolute error: " + std::to_string(maximumCostError) + "\nMaximum final-depth absolute error: " + std::to_string(maximumFinalDepthError) + "\n");
+		for (uint32_t i = 0; i < kScenarios; ++i) { const char *status = gpuStatuses[i] == kAccepted ? "Accepted" : gpuStatuses[i] == kCostRejected ? "CostRejected" : gpuStatuses[i] == kConfidenceRejected ? "ConfidenceRejected" : "NoValidPlane"; std::string line = "case " + std::to_string(i) + ": status=" + status + ", bestPlane=" + std::to_string(gpuBestPlane[i]) + ", bestDepth=" + std::to_string(gpuBestDepths[i]) + ", bestCost=" + std::to_string(gpuBestCosts[i]) + ", secondBestCost=" + std::to_string(gpuSecondBestCosts[i]) + ", finalDepth=" + std::to_string(gpuFinalDepths[i]) + ", planeDepths=["; for (uint32_t p = 0; p < kPlanes; ++p) line += (p ? "," : "") + std::to_string(gpuPlaneDepths[i * kPlanes + p]); line += "], planeCosts=["; for (uint32_t p = 0; p < kPlanes; ++p) { const uint32_t j = i * kPlanes + p; line += (p ? "," : "") + (gpuPlaneValidity[j] ? std::to_string(gpuPlaneCosts[j]) : std::string("invalid")); } UIUtility::Print(line + "]\n"); }
+		cleanup(); return true;
+	}
+	catch (const std::exception &ex) { cleanup(); UIUtility::Print(std::string("PlaneSweep GPU depth-plane search failed: ") + ex.what() + "\n"); return false; }
+}
+
 void PlaneSweepGpu::Clean(void)
 {
 	if (!m_initialized)
