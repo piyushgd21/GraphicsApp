@@ -1,0 +1,1434 @@
+#include "PlaneSweepGpu.h"
+
+#include "GraphicsUtility.h"
+#include "UIUtility.h"
+#include "PathUtility.h"
+#include "PlaneSweepGpuTypes.h"
+
+#include <Windows.h>
+#include <filesystem>
+#include <fstream>
+#include <string>
+
+#include <stdexcept>
+#include <cmath>
+
+namespace graphicsFX
+{
+
+PlaneSweepGpu::PlaneSweepGpu(void)
+{
+}
+
+bool PlaneSweepGpu::RunCameraConversionSmokeTest(void)
+{
+	if (!m_initialized)
+	{
+		throw std::runtime_error("PlaneSweepGpu not initialized.");
+	}
+
+	// Use 3 synthetic Colmap camera records (intrinsics + pose)
+	constexpr uint32_t kCount = 3u;
+
+	// Build synthetic Colmap CPU-side source data
+	std::vector<ColmapCameraIntrinsicData> cpuIntrinsics(kCount);
+	std::vector<ColmapCameraData> cpuCameras(kCount);
+
+	// Record 0
+	cpuIntrinsics[0].m_width = 641; cpuIntrinsics[0].m_height = 479;
+	cpuIntrinsics[0].m_fx = 501.25; cpuIntrinsics[0].m_fy = 502.50;
+	cpuIntrinsics[0].m_cx = 319.75; cpuIntrinsics[0].m_cy = 240.125;
+	cpuIntrinsics[0].m_k1 = 0.011; cpuIntrinsics[0].m_k2 = -0.022; cpuIntrinsics[0].m_p1 = 0.0035; cpuIntrinsics[0].m_p2 = -0.0045;
+
+	cpuCameras[0].m_position = Float3{ 1.25f, -2.5f, 3.75f };
+	cpuCameras[0].m_forward = Float3{ 0.11f, 0.22f, 0.93f };
+	cpuCameras[0].m_up = Float3{ -0.17f, 0.98f, 0.07f };
+	cpuCameras[0].m_right = Float3{ 0.97f, 0.19f, -0.13f };
+
+	// Record 1
+	cpuIntrinsics[1].m_width = 1283; cpuIntrinsics[1].m_height = 721;
+	cpuIntrinsics[1].m_fx = 812.75; cpuIntrinsics[1].m_fy = 810.125;
+	cpuIntrinsics[1].m_cx = 640.5; cpuIntrinsics[1].m_cy = 360.25;
+	cpuIntrinsics[1].m_k1 = -0.013; cpuIntrinsics[1].m_k2 = 0.027; cpuIntrinsics[1].m_p1 = -0.0055; cpuIntrinsics[1].m_p2 = 0.0065;
+
+	cpuCameras[1].m_position = Float3{ -10.0f, 5.5f, 0.125f };
+	cpuCameras[1].m_forward = Float3{ -0.3f, 0.4f, 0.866f };
+	cpuCameras[1].m_up = Float3{ 0.0f, 1.0f, 0.0f };
+	cpuCameras[1].m_right = Float3{ 0.953f, -0.289f, 0.089f };
+
+	// Record 2
+	cpuIntrinsics[2].m_width = 1920; cpuIntrinsics[2].m_height = 1080;
+	cpuIntrinsics[2].m_fx = 1000.0; cpuIntrinsics[2].m_fy = 999.5;
+	cpuIntrinsics[2].m_cx = 960.0; cpuIntrinsics[2].m_cy = 540.0;
+	cpuIntrinsics[2].m_k1 = 0.0; cpuIntrinsics[2].m_k2 = 0.0; cpuIntrinsics[2].m_p1 = 0.0; cpuIntrinsics[2].m_p2 = 0.0;
+
+	cpuCameras[2].m_position = Float3{ 100.0f, -100.0f, 50.5f };
+	cpuCameras[2].m_forward = Float3{ 0.0f, 0.0f, 1.0f };
+	cpuCameras[2].m_up = Float3{ 0.0f, 1.0f, 0.0f };
+	cpuCameras[2].m_right = Float3{ 1.0f, 0.0f, 0.0f };
+
+	// Convert on CPU using existing helpers
+	const std::vector<GpuCameraIntrinsics> gpuIntrinsics = MakeGpuCameraIntrinsicsArray(cpuIntrinsics);
+	const std::vector<GpuCameraPose> gpuPoses = MakeGpuCameraPoseArray(cpuCameras);
+
+	// CPU-side verification: compare converted GPU PODs against source
+	for (uint32_t i = 0; i < kCount; ++i)
+	{
+		const auto &srcI = cpuIntrinsics[i];
+		const auto &dstI = gpuIntrinsics[i];
+		if (dstI.m_width != static_cast<int32_t>(srcI.m_width)) { UIUtility::Print("Conversion mismatch: intrinsics width\n"); return false; }
+		if (dstI.m_height != static_cast<int32_t>(srcI.m_height)) { UIUtility::Print("Conversion mismatch: intrinsics height\n"); return false; }
+		if (fabs(dstI.m_fx - static_cast<float>(srcI.m_fx)) > 1e-6f) { UIUtility::Print("Conversion mismatch: intrinsics fx\n"); return false; }
+		if (fabs(dstI.m_fy - static_cast<float>(srcI.m_fy)) > 1e-6f) { UIUtility::Print("Conversion mismatch: intrinsics fy\n"); return false; }
+		if (fabs(dstI.m_cx - static_cast<float>(srcI.m_cx)) > 1e-6f) { UIUtility::Print("Conversion mismatch: intrinsics cx\n"); return false; }
+		if (fabs(dstI.m_cy - static_cast<float>(srcI.m_cy)) > 1e-6f) { UIUtility::Print("Conversion mismatch: intrinsics cy\n"); return false; }
+		if (fabs(dstI.m_k1 - static_cast<float>(srcI.m_k1)) > 1e-6f) { UIUtility::Print("Conversion mismatch: intrinsics k1\n"); return false; }
+		if (fabs(dstI.m_k2 - static_cast<float>(srcI.m_k2)) > 1e-6f) { UIUtility::Print("Conversion mismatch: intrinsics k2\n"); return false; }
+		if (fabs(dstI.m_p1 - static_cast<float>(srcI.m_p1)) > 1e-6f) { UIUtility::Print("Conversion mismatch: intrinsics p1\n"); return false; }
+		if (fabs(dstI.m_p2 - static_cast<float>(srcI.m_p2)) > 1e-6f) { UIUtility::Print("Conversion mismatch: intrinsics p2\n"); return false; }
+	}
+
+	for (uint32_t i = 0; i < kCount; ++i)
+	{
+		const auto &srcP = cpuCameras[i];
+		const auto &dstP = gpuPoses[i];
+		for (int m = 0; m < 3; ++m)
+		{
+			const float srcValPos = (&srcP.m_position.x)[m];
+			if (fabs(dstP.m_position[m] - srcValPos) > 1e-6f) { UIUtility::Print("Conversion mismatch: pose position\n"); return false; }
+			const float srcValFwd = (&srcP.m_forward.x)[m];
+			if (fabs(dstP.m_forward[m] - srcValFwd) > 1e-6f) { UIUtility::Print("Conversion mismatch: pose forward\n"); return false; }
+			const float srcValUp = (&srcP.m_up.x)[m];
+			if (fabs(dstP.m_up[m] - srcValUp) > 1e-6f) { UIUtility::Print("Conversion mismatch: pose up\n"); return false; }
+			const float srcValRight = (&srcP.m_right.x)[m];
+			if (fabs(dstP.m_right[m] - srcValRight) > 1e-6f) { UIUtility::Print("Conversion mismatch: pose right\n"); return false; }
+		}
+		// check w components == 0
+		if (fabs(dstP.m_position[3] - 0.0f) > 1e-6f) { UIUtility::Print("Conversion mismatch: pose position.w\n"); return false; }
+		if (fabs(dstP.m_forward[3] - 0.0f) > 1e-6f) { UIUtility::Print("Conversion mismatch: pose forward.w\n"); return false; }
+		if (fabs(dstP.m_up[3] - 0.0f) > 1e-6f) { UIUtility::Print("Conversion mismatch: pose up.w\n"); return false; }
+		if (fabs(dstP.m_right[3] - 0.0f) > 1e-6f) { UIUtility::Print("Conversion mismatch: pose right.w\n"); return false; }
+	}
+
+	// Reuse existing GPU round-trip by uploading gpuIntrinsics and gpuPoses to the same pipeline created in RunCameraLayoutSmokeTest.
+	// We'll serialize the converted POD arrays into the staging/device buffers exactly like the layout test and dispatch the same shader.
+
+	// For simplicity, call RunCameraLayoutSmokeTest's internal flow by reusing the shader and code paths; but we must upload the already-converted PODs.
+	// Implement a minimal inlined copy of the proven path that uploads deviceIntrinsics/devicePoses from these converted vectors.
+
+	// The upload / dispatch / readback code is highly similar to RunCameraLayoutSmokeTest. To avoid duplicating too much logic, we'll temporarily
+	// reuse the same buffer creation and command sequence as the layout test but replace the staging contents with gpuIntrinsics/gpuPoses.
+
+	// Create staging buffers and populate from gpuIntrinsics/gpuPoses
+	const VkDeviceSize intrinsicsSize = sizeof(GpuCameraIntrinsics) * kCount;
+	const VkDeviceSize posesSize = sizeof(GpuCameraPose) * kCount;
+
+	auto createHostBuffer = [&](VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer &buffer, VkDeviceMemory &memory)
+	{
+		VkBufferCreateInfo bufInfo{};
+		bufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+		bufInfo.size = size;
+		bufInfo.usage = usage;
+		bufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+		if (vkCreateBuffer(m_device, &bufInfo, nullptr, &buffer) != VK_SUCCESS)
+		{
+			throw std::runtime_error("Failed to create staging/readback buffer.");
+		}
+
+		VkMemoryRequirements memReq{};
+		vkGetBufferMemoryRequirements(m_device, buffer, &memReq);
+
+		VkPhysicalDeviceMemoryProperties memProps{};
+		vkGetPhysicalDeviceMemoryProperties(m_physicalDevice, &memProps);
+
+		uint32_t memType = UINT32_MAX;
+		for (uint32_t i = 0; i < memProps.memoryTypeCount; ++i)
+		{
+			if ((memReq.memoryTypeBits & (1u << i)) != 0 && (memProps.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) == (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+			{
+				memType = i; break;
+			}
+		}
+
+		if (memType == UINT32_MAX)
+		{
+			vkDestroyBuffer(m_device, buffer, nullptr);
+			throw std::runtime_error("No suitable memory type for staging buffer.");
+		}
+
+		VkMemoryAllocateInfo alloc{}; alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO; alloc.allocationSize = memReq.size; alloc.memoryTypeIndex = memType;
+		if (vkAllocateMemory(m_device, &alloc, nullptr, &memory) != VK_SUCCESS) { vkDestroyBuffer(m_device, buffer, nullptr); throw std::runtime_error("Failed to allocate staging memory."); }
+		vkBindBufferMemory(m_device, buffer, memory, 0);
+	};
+
+	VkBuffer stagingIntrinsics = VK_NULL_HANDLE; VkDeviceMemory stagingIntrinsicsMem = VK_NULL_HANDLE;
+	VkBuffer stagingPoses = VK_NULL_HANDLE; VkDeviceMemory stagingPosesMem = VK_NULL_HANDLE;
+	createHostBuffer(intrinsicsSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, stagingIntrinsics, stagingIntrinsicsMem);
+	createHostBuffer(posesSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, stagingPoses, stagingPosesMem);
+
+	// copy converted PODs into staging
+	void *mapPtr = nullptr;
+	vkMapMemory(m_device, stagingIntrinsicsMem, 0, intrinsicsSize, 0, &mapPtr);
+	memcpy(mapPtr, gpuIntrinsics.data(), static_cast<size_t>(intrinsicsSize));
+	vkUnmapMemory(m_device, stagingIntrinsicsMem);
+
+	vkMapMemory(m_device, stagingPosesMem, 0, posesSize, 0, &mapPtr);
+	memcpy(mapPtr, gpuPoses.data(), static_cast<size_t>(posesSize));
+	vkUnmapMemory(m_device, stagingPosesMem);
+
+	// Create device-local input and output, readback buffers (reuse the same usage sets as layout test)
+	auto createDeviceLocalBuffer = [&](VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer &buffer, VkDeviceMemory &memory)
+	{
+		VkBufferCreateInfo bufInfo{}; bufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO; bufInfo.size = size; bufInfo.usage = usage; bufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		if (vkCreateBuffer(m_device, &bufInfo, nullptr, &buffer) != VK_SUCCESS) { throw std::runtime_error("Failed to create device-local buffer."); }
+		VkMemoryRequirements memReq{}; vkGetBufferMemoryRequirements(m_device, buffer, &memReq);
+		VkPhysicalDeviceMemoryProperties memProps{}; vkGetPhysicalDeviceMemoryProperties(m_physicalDevice, &memProps);
+		uint32_t memType = UINT32_MAX; for (uint32_t i = 0; i < memProps.memoryTypeCount; ++i) { if ((memReq.memoryTypeBits & (1u << i)) != 0 && (memProps.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) { memType = i; break; } }
+		if (memType == UINT32_MAX) { vkDestroyBuffer(m_device, buffer, nullptr); throw std::runtime_error("No suitable device-local memory type."); }
+		VkMemoryAllocateInfo alloc{}; alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO; alloc.allocationSize = memReq.size; alloc.memoryTypeIndex = memType;
+		if (vkAllocateMemory(m_device, &alloc, nullptr, &memory) != VK_SUCCESS) { vkDestroyBuffer(m_device, buffer, nullptr); throw std::runtime_error("Failed to allocate device-local memory."); }
+		vkBindBufferMemory(m_device, buffer, memory, 0);
+	};
+
+	VkBuffer deviceIntrinsics = VK_NULL_HANDLE; VkDeviceMemory deviceIntrinsicsMem = VK_NULL_HANDLE;
+	VkBuffer devicePoses = VK_NULL_HANDLE; VkDeviceMemory devicePosesMem = VK_NULL_HANDLE;
+	createDeviceLocalBuffer(intrinsicsSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, deviceIntrinsics, deviceIntrinsicsMem);
+	createDeviceLocalBuffer(posesSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, devicePoses, devicePosesMem);
+
+	VkBuffer deviceIntrinsicsOut = VK_NULL_HANDLE; VkDeviceMemory deviceIntrinsicsOutMem = VK_NULL_HANDLE;
+	VkBuffer devicePosesOut = VK_NULL_HANDLE; VkDeviceMemory devicePosesOutMem = VK_NULL_HANDLE;
+	createDeviceLocalBuffer(intrinsicsSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, deviceIntrinsicsOut, deviceIntrinsicsOutMem);
+	createDeviceLocalBuffer(posesSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, devicePosesOut, devicePosesOutMem);
+
+	VkBuffer readIntrinsics = VK_NULL_HANDLE; VkDeviceMemory readIntrinsicsMem = VK_NULL_HANDLE;
+	VkBuffer readPoses = VK_NULL_HANDLE; VkDeviceMemory readPosesMem = VK_NULL_HANDLE;
+	createHostBuffer(intrinsicsSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT, readIntrinsics, readIntrinsicsMem);
+	createHostBuffer(posesSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT, readPoses, readPosesMem);
+
+	// Build descriptor set layout, descriptor sets, pipeline like the layout test
+	// (reuse shader file: Shaders/planeSweepCameraLayoutSmokeTest.comp.spv)
+	const std::string shaderRelativePath = "shaders/planeSweepCameraLayoutSmokeTest.comp.spv";
+	std::vector<char> code = ReadShaderFile(shaderRelativePath);
+	if (code.empty()) { UIUtility::Print("Compute shader SPIR-V not found for conversion test\n"); throw std::runtime_error("Failed to load compute shader SPIR-V"); }
+
+	VkShaderModuleCreateInfo shaderCreate{}; shaderCreate.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO; shaderCreate.codeSize = code.size(); shaderCreate.pCode = reinterpret_cast<const uint32_t *>(code.data());
+	VkShaderModule shaderModule = VK_NULL_HANDLE;
+	if (vkCreateShaderModule(m_device, &shaderCreate, nullptr, &shaderModule) != VK_SUCCESS) { throw std::runtime_error("Failed to create shader module for conversion test."); }
+
+	// Descriptor layout bindings 0..3
+	std::array<VkDescriptorSetLayoutBinding, 4> bindings{};
+	for (uint32_t i = 0; i < 4; ++i) { bindings[i].binding = i; bindings[i].descriptorCount = 1; bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT; bindings[i].pImmutableSamplers = nullptr; }
+
+	VkDescriptorSetLayoutCreateInfo layoutCreate{}; layoutCreate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO; layoutCreate.bindingCount = static_cast<uint32_t>(bindings.size()); layoutCreate.pBindings = bindings.data();
+	VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE; if (vkCreateDescriptorSetLayout(m_device, &layoutCreate, nullptr, &descriptorSetLayout) != VK_SUCCESS) { vkDestroyShaderModule(m_device, shaderModule, nullptr); throw std::runtime_error("Failed to create descriptor set layout for conversion test."); }
+
+	VkPipelineLayoutCreateInfo pipelineLayoutCreate{}; pipelineLayoutCreate.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO; pipelineLayoutCreate.setLayoutCount = 1; pipelineLayoutCreate.pSetLayouts = &descriptorSetLayout;
+	VkPipelineLayout pipelineLayout = VK_NULL_HANDLE; if (vkCreatePipelineLayout(m_device, &pipelineLayoutCreate, nullptr, &pipelineLayout) != VK_SUCCESS) { vkDestroyDescriptorSetLayout(m_device, descriptorSetLayout, nullptr); vkDestroyShaderModule(m_device, shaderModule, nullptr); throw std::runtime_error("Failed to create pipeline layout for conversion test."); }
+
+	VkComputePipelineCreateInfo pipelineCreate{}; pipelineCreate.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO; VkPipelineShaderStageCreateInfo stage{}; stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO; stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; stage.module = shaderModule; stage.pName = "main"; pipelineCreate.stage = stage; pipelineCreate.layout = pipelineLayout;
+	VkPipeline pipeline = VK_NULL_HANDLE; if (vkCreateComputePipelines(m_device, VK_NULL_HANDLE, 1, &pipelineCreate, nullptr, &pipeline) != VK_SUCCESS) { vkDestroyPipelineLayout(m_device, pipelineLayout, nullptr); vkDestroyDescriptorSetLayout(m_device, descriptorSetLayout, nullptr); vkDestroyShaderModule(m_device, shaderModule, nullptr); throw std::runtime_error("Failed to create compute pipeline for conversion test."); }
+
+	// Descriptor pool + set
+	std::array<VkDescriptorPoolSize,1> poolSizes{}; poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; poolSizes[0].descriptorCount = 4;
+	VkDescriptorPoolCreateInfo poolCreate{}; poolCreate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO; poolCreate.maxSets = 1; poolCreate.poolSizeCount = 1; poolCreate.pPoolSizes = poolSizes.data();
+	VkDescriptorPool descriptorPool = VK_NULL_HANDLE; if (vkCreateDescriptorPool(m_device, &poolCreate, nullptr, &descriptorPool) != VK_SUCCESS) { vkDestroyPipeline(m_device, pipeline, nullptr); vkDestroyPipelineLayout(m_device, pipelineLayout, nullptr); vkDestroyDescriptorSetLayout(m_device, descriptorSetLayout, nullptr); vkDestroyShaderModule(m_device, shaderModule, nullptr); throw std::runtime_error("Failed to create descriptor pool for conversion test."); }
+
+	VkDescriptorSetAllocateInfo allocInfo{}; allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO; allocInfo.descriptorPool = descriptorPool; allocInfo.descriptorSetCount = 1; allocInfo.pSetLayouts = &descriptorSetLayout;
+	VkDescriptorSet descriptorSet = VK_NULL_HANDLE; if (vkAllocateDescriptorSets(m_device, &allocInfo, &descriptorSet) != VK_SUCCESS) { vkDestroyDescriptorPool(m_device, descriptorPool, nullptr); vkDestroyPipeline(m_device, pipeline, nullptr); vkDestroyPipelineLayout(m_device, pipelineLayout, nullptr); vkDestroyDescriptorSetLayout(m_device, descriptorSetLayout, nullptr); vkDestroyShaderModule(m_device, shaderModule, nullptr); throw std::runtime_error("Failed to allocate descriptor set for conversion test."); }
+
+	std::array<VkDescriptorBufferInfo,4> descInfos{};
+	descInfos[0].buffer = deviceIntrinsics; descInfos[0].offset = 0; descInfos[0].range = intrinsicsSize;
+	descInfos[1].buffer = devicePoses; descInfos[1].offset = 0; descInfos[1].range = posesSize;
+	descInfos[2].buffer = deviceIntrinsicsOut; descInfos[2].offset = 0; descInfos[2].range = intrinsicsSize;
+	descInfos[3].buffer = devicePosesOut; descInfos[3].offset = 0; descInfos[3].range = posesSize;
+
+	std::array<VkWriteDescriptorSet,4> writes{};
+	for (uint32_t i = 0; i < 4; ++i) { writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; writes[i].dstSet = descriptorSet; writes[i].dstBinding = i; writes[i].dstArrayElement = 0; writes[i].descriptorCount = 1; writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[i].pBufferInfo = &descInfos[i]; }
+	vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+
+	// Record command buffer: copy staging -> device inputs, barrier, bind pipeline, dispatch, barrier, copy outputs -> readbacks
+	VkCommandBufferAllocateInfo allocCmd{}; allocCmd.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO; allocCmd.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; allocCmd.commandPool = m_commandPool; allocCmd.commandBufferCount = 1;
+	VkCommandBuffer cmd = VK_NULL_HANDLE; if (vkAllocateCommandBuffers(m_device, &allocCmd, &cmd) != VK_SUCCESS) { throw std::runtime_error("Failed to allocate command buffer for conversion test."); }
+
+	VkCommandBufferBeginInfo beginInfo{}; beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO; beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+	if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) { throw std::runtime_error("Failed to begin command buffer for conversion test."); }
+
+	VkBufferCopy copyIntr{}; copyIntr.srcOffset = 0; copyIntr.dstOffset = 0; copyIntr.size = intrinsicsSize;
+	vkCmdCopyBuffer(cmd, stagingIntrinsics, deviceIntrinsics, 1, &copyIntr);
+	VkBufferCopy copyPos{}; copyPos.srcOffset = 0; copyPos.dstOffset = 0; copyPos.size = posesSize;
+	vkCmdCopyBuffer(cmd, stagingPoses, devicePoses, 1, &copyPos);
+
+	// upload -> compute barrier
+	VkBufferMemoryBarrier uploadBarriers[2]{};
+	uploadBarriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER; uploadBarriers[0].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; uploadBarriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT; uploadBarriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; uploadBarriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; uploadBarriers[0].buffer = deviceIntrinsics; uploadBarriers[0].offset = 0; uploadBarriers[0].size = intrinsicsSize;
+	uploadBarriers[1] = uploadBarriers[0]; uploadBarriers[1].buffer = devicePoses; uploadBarriers[1].size = posesSize;
+
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 2, uploadBarriers, 0, nullptr);
+
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+	vkCmdDispatch(cmd, kCount, 1, 1);
+
+	VkBufferMemoryBarrier outputBarriers[2]{};
+	outputBarriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER; outputBarriers[0].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT; outputBarriers[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT; outputBarriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; outputBarriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; outputBarriers[0].buffer = deviceIntrinsicsOut; outputBarriers[0].offset = 0; outputBarriers[0].size = intrinsicsSize;
+	outputBarriers[1] = outputBarriers[0]; outputBarriers[1].buffer = devicePosesOut; outputBarriers[1].size = posesSize;
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 2, outputBarriers, 0, nullptr);
+
+	VkBufferCopy copyOutIntr{}; copyOutIntr.srcOffset = 0; copyOutIntr.dstOffset = 0; copyOutIntr.size = intrinsicsSize;
+	vkCmdCopyBuffer(cmd, deviceIntrinsicsOut, readIntrinsics, 1, &copyOutIntr);
+	VkBufferCopy copyOutPos{}; copyOutPos.srcOffset = 0; copyOutPos.dstOffset = 0; copyOutPos.size = posesSize;
+	vkCmdCopyBuffer(cmd, devicePosesOut, readPoses, 1, &copyOutPos);
+
+	if (vkEndCommandBuffer(cmd) != VK_SUCCESS) { throw std::runtime_error("Failed to record command buffer for conversion test."); }
+
+	VkFenceCreateInfo fenceInfo{}; fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO; VkFence fence = VK_NULL_HANDLE; if (vkCreateFence(m_device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) { throw std::runtime_error("Failed to create fence for conversion test."); }
+	VkSubmitInfo submit{}; submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO; submit.commandBufferCount = 1; submit.pCommandBuffers = &cmd; if (vkQueueSubmit(m_queue, 1, &submit, fence) != VK_SUCCESS) { if (fence != VK_NULL_HANDLE) { vkDestroyFence(m_device, fence, nullptr); fence = VK_NULL_HANDLE; } throw std::runtime_error("Failed to submit conversion test command buffer."); }
+	if (vkWaitForFences(m_device, 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) { if (fence != VK_NULL_HANDLE) { vkDestroyFence(m_device, fence, nullptr); fence = VK_NULL_HANDLE; } throw std::runtime_error("Failed to wait for fence for conversion test."); }
+	if (fence != VK_NULL_HANDLE) { vkDestroyFence(m_device, fence, nullptr); fence = VK_NULL_HANDLE; }
+
+	// Map readbacks and compare against gpuIntrinsics/gpuPoses
+	void *mapped = nullptr;
+	vkMapMemory(m_device, readIntrinsicsMem, 0, intrinsicsSize, 0, &mapped);
+	GpuCameraIntrinsics *intrRead = reinterpret_cast<GpuCameraIntrinsics *>(mapped);
+	bool intrAll = true;
+	for (uint32_t i = 0; i < kCount; ++i)
+	{
+		const GpuCameraIntrinsics &exp = gpuIntrinsics[i];
+		const GpuCameraIntrinsics &act = intrRead[i];
+		if (exp.m_width != act.m_width || exp.m_height != act.m_height || fabs(exp.m_fx - act.m_fx) > 1e-6f || fabs(exp.m_fy - act.m_fy) > 1e-6f || fabs(exp.m_cx - act.m_cx) > 1e-6f || fabs(exp.m_cy - act.m_cy) > 1e-6f || fabs(exp.m_k1 - act.m_k1) > 1e-6f || fabs(exp.m_k2 - act.m_k2) > 1e-6f || fabs(exp.m_p1 - act.m_p1) > 1e-6f || fabs(exp.m_p2 - act.m_p2) > 1e-6f)
+		{
+			UIUtility::Print(std::string("Camera conversion smoke test mismatch\nrecord: ") + std::to_string(i) + " type: GpuCameraIntrinsics\n"); intrAll = false; break;
+		}
+	}
+	vkUnmapMemory(m_device, readIntrinsicsMem);
+
+	vkMapMemory(m_device, readPosesMem, 0, posesSize, 0, &mapped);
+	GpuCameraPose *poseRead = reinterpret_cast<GpuCameraPose *>(mapped);
+	bool poseAll = true;
+	for (uint32_t i = 0; i < kCount; ++i)
+	{
+		const GpuCameraPose &exp = gpuPoses[i];
+		const GpuCameraPose &act = poseRead[i];
+		for (int m = 0; m < 4; ++m)
+		{
+			if (fabs(exp.m_position[m] - act.m_position[m]) > 1e-6f) { UIUtility::Print(std::string("Camera conversion smoke test mismatch\nrecord: ") + std::to_string(i) + " type: GpuCameraPose field: position[" + std::to_string(m) + "]\n"); poseAll = false; break; }
+			if (fabs(exp.m_forward[m] - act.m_forward[m]) > 1e-6f) { UIUtility::Print(std::string("Camera conversion smoke test mismatch\nrecord: ") + std::to_string(i) + " type: GpuCameraPose field: forward[" + std::to_string(m) + "]\n"); poseAll = false; break; }
+			if (fabs(exp.m_up[m] - act.m_up[m]) > 1e-6f) { UIUtility::Print(std::string("Camera conversion smoke test mismatch\nrecord: ") + std::to_string(i) + " type: GpuCameraPose field: up[" + std::to_string(m) + "]\n"); poseAll = false; break; }
+			if (fabs(exp.m_right[m] - act.m_right[m]) > 1e-6f) { UIUtility::Print(std::string("Camera conversion smoke test mismatch\nrecord: ") + std::to_string(i) + " type: GpuCameraPose field: right[" + std::to_string(m) + "]\n"); poseAll = false; break; }
+		}
+		if (!poseAll) break;
+	}
+	vkUnmapMemory(m_device, readPosesMem);
+
+	if (intrAll && poseAll)
+	{
+		UIUtility::Print("PlaneSweep GPU camera-conversion smoke test succeeded:\n3 / 3 intrinsic conversions matched.\n3 / 3 pose conversions matched.\n3 / 3 GPU intrinsic round trips matched.\n3 / 3 GPU pose round trips matched.\n");
+	}
+
+	// Cleanup same as layout test
+	vkFreeCommandBuffers(m_device, m_commandPool, 1, &cmd);
+	vkDestroyPipeline(m_device, pipeline, nullptr);
+	vkDestroyPipelineLayout(m_device, pipelineLayout, nullptr);
+	vkDestroyShaderModule(m_device, shaderModule, nullptr);
+	vkDestroyDescriptorPool(m_device, descriptorPool, nullptr);
+	vkDestroyDescriptorSetLayout(m_device, descriptorSetLayout, nullptr);
+
+	vkFreeMemory(m_device, readPosesMem, nullptr); vkDestroyBuffer(m_device, readPoses, nullptr);
+	vkFreeMemory(m_device, readIntrinsicsMem, nullptr); vkDestroyBuffer(m_device, readIntrinsics, nullptr);
+
+	vkFreeMemory(m_device, devicePosesOutMem, nullptr); vkDestroyBuffer(m_device, devicePosesOut, nullptr);
+	vkFreeMemory(m_device, deviceIntrinsicsOutMem, nullptr); vkDestroyBuffer(m_device, deviceIntrinsicsOut, nullptr);
+
+	vkFreeMemory(m_device, devicePosesMem, nullptr); vkDestroyBuffer(m_device, devicePoses, nullptr);
+	vkFreeMemory(m_device, deviceIntrinsicsMem, nullptr); vkDestroyBuffer(m_device, deviceIntrinsics, nullptr);
+
+	vkFreeMemory(m_device, stagingPosesMem, nullptr); vkDestroyBuffer(m_device, stagingPoses, nullptr);
+	vkFreeMemory(m_device, stagingIntrinsicsMem, nullptr); vkDestroyBuffer(m_device, stagingIntrinsics, nullptr);
+
+	return intrAll && poseAll;
+}
+
+// Loads a compiled shader file using the same search strategy used elsewhere in the project.
+std::vector<char> PlaneSweepGpu::ReadShaderFile(const std::string &relativePath) const
+{
+	std::vector<std::filesystem::path> candidates;
+
+	wchar_t modulePath[MAX_PATH]{};
+	const DWORD modulePathLength = GetModuleFileNameW(nullptr, modulePath, MAX_PATH);
+	if (modulePathLength > 0)
+	{
+		candidates.push_back(std::filesystem::path(modulePath).parent_path() / relativePath);
+	}
+
+	candidates.push_back(PathUtility::ShaderOutputFolder() / std::filesystem::path(relativePath).filename());
+	candidates.push_back(std::filesystem::current_path() / relativePath);
+	candidates.push_back(std::filesystem::path(relativePath));
+
+	for (const auto &candidate : candidates)
+	{
+		std::ifstream file(candidate, std::ios::ate | std::ios::binary);
+		if (!file.is_open())
+		{
+			continue;
+		}
+
+		const std::streampos endPosition = file.tellg();
+		if (endPosition == std::streampos(-1))
+		{
+			file.close();
+			continue;
+		}
+
+		const std::size_t fileSize = static_cast<std::size_t>(endPosition);
+		if (fileSize == 0)
+		{
+			file.close();
+			continue;
+		}
+
+		std::vector<char> buffer(fileSize);
+		file.seekg(0);
+		file.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+		file.close();
+		return buffer;
+	}
+
+	return {};
+}
+
+PlaneSweepGpu::~PlaneSweepGpu(void)
+{
+	Clean();
+}
+
+void PlaneSweepGpu::Initialize(VkDevice device, VkPhysicalDevice physicalDevice, uint32_t queueFamilyIndex, VkQueue queue, VkCommandPool commandPool)
+{
+	if (m_initialized)
+	{
+		throw std::runtime_error("PlaneSweepGpu already initialized.");
+	}
+
+	m_device = device;
+	m_physicalDevice = physicalDevice;
+	m_queueFamilyIndex = queueFamilyIndex;
+	m_queue = queue;
+	m_commandPool = commandPool;
+
+	m_initialized = true;
+}
+
+void PlaneSweepGpu::Clean(void)
+{
+	if (!m_initialized)
+	{
+		return;
+	}
+
+	if (m_computePipeline != VK_NULL_HANDLE)
+	{
+		vkDestroyPipeline(m_device, m_computePipeline, nullptr);
+		m_computePipeline = VK_NULL_HANDLE;
+	}
+
+	if (m_pipelineLayout != VK_NULL_HANDLE)
+	{
+		vkDestroyPipelineLayout(m_device, m_pipelineLayout, nullptr);
+		m_pipelineLayout = VK_NULL_HANDLE;
+	}
+
+	if (m_shaderModule != VK_NULL_HANDLE)
+	{
+		vkDestroyShaderModule(m_device, m_shaderModule, nullptr);
+		m_shaderModule = VK_NULL_HANDLE;
+	}
+
+	m_initialized = false;
+}
+
+// Runs a trivial compute smoke test: create shader module, pipeline, record a one-time command buffer, dispatch, submit, and wait for completion.
+void PlaneSweepGpu::RunComputeSmokeTest(void)
+{
+	if (!m_initialized)
+	{
+		throw std::runtime_error("PlaneSweepGpu not initialized.");
+	}
+
+	// Load SPIR-V from compiled shader file using the same search strategy used elsewhere.
+	const std::string shaderRelativePath = "shaders/planeSweepSmokeTest.comp.spv";
+	std::vector<char> code = ReadShaderFile(shaderRelativePath);
+	if (code.empty())
+	{
+		UIUtility::Print("Compute shader SPIR-V not found: " + shaderRelativePath + " - ensure ShaderUtility compiles .comp to Output/Shaders at startup.\n");
+		throw std::runtime_error("Failed to load compute shader SPIR-V: " + shaderRelativePath);
+	}
+
+	VkShaderModuleCreateInfo createInfo{};
+	createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+	createInfo.codeSize = code.size();
+	createInfo.pCode = reinterpret_cast<const uint32_t *>(code.data());
+
+	if (vkCreateShaderModule(m_device, &createInfo, nullptr, &m_shaderModule) != VK_SUCCESS)
+	{
+		throw std::runtime_error("Failed to create compute shader module.");
+	}
+
+	VkPipelineShaderStageCreateInfo shaderStage{};
+	shaderStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	shaderStage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+	shaderStage.module = m_shaderModule;
+	shaderStage.pName = "main";
+
+	VkPipelineLayoutCreateInfo layoutInfo{};
+	layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+
+	if (vkCreatePipelineLayout(m_device, &layoutInfo, nullptr, &m_pipelineLayout) != VK_SUCCESS)
+	{
+		throw std::runtime_error("Failed to create pipeline layout.");
+	}
+
+	VkComputePipelineCreateInfo pipelineInfo{};
+	pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+	pipelineInfo.stage = shaderStage;
+	pipelineInfo.layout = m_pipelineLayout;
+
+	if (vkCreateComputePipelines(m_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_computePipeline) != VK_SUCCESS)
+	{
+		throw std::runtime_error("Failed to create compute pipeline.");
+	}
+
+	// Allocate a one-time command buffer from the provided command pool.
+	VkCommandBufferAllocateInfo allocInfo{};
+	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	allocInfo.commandPool = m_commandPool;
+	allocInfo.commandBufferCount = 1;
+
+	VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+	if (vkAllocateCommandBuffers(m_device, &allocInfo, &commandBuffer) != VK_SUCCESS)
+	{
+		throw std::runtime_error("Failed to allocate command buffer for compute smoke test.");
+	}
+
+	VkCommandBufferBeginInfo beginInfo{};
+	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+	beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+	if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS)
+	{
+		throw std::runtime_error("Failed to begin compute command buffer.");
+	}
+
+	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_computePipeline);
+	vkCmdDispatch(commandBuffer, 1, 1, 1);
+
+	if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
+	{
+		throw std::runtime_error("Failed to record compute command buffer.");
+	}
+
+	VkSubmitInfo submitInfo{};
+	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	submitInfo.commandBufferCount = 1;
+	submitInfo.pCommandBuffers = &commandBuffer;
+
+	VkFenceCreateInfo fenceInfo{};
+	fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+
+	VkFence fence = VK_NULL_HANDLE;
+	if (vkCreateFence(m_device, &fenceInfo, nullptr, &fence) != VK_SUCCESS)
+	{
+		throw std::runtime_error("Failed to create fence for compute submission.");
+	}
+
+	if (vkQueueSubmit(m_queue, 1, &submitInfo, fence) != VK_SUCCESS)
+	{
+		throw std::runtime_error("Failed to submit compute command buffer.");
+	}
+
+	// Wait for completion to keep this smoke test simple and synchronous.
+	if (vkWaitForFences(m_device, 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
+	{
+		throw std::runtime_error("Failed to wait for compute fence.");
+	}
+
+	vkDestroyFence(m_device, fence, nullptr);
+
+	vkFreeCommandBuffers(m_device, m_commandPool, 1, &commandBuffer);
+}
+
+bool PlaneSweepGpu::RunStorageBufferSmokeTest(void)
+{
+	if (!m_initialized)
+	{
+		throw std::runtime_error("PlaneSweepGpu not initialized.");
+	}
+
+	constexpr uint32_t kCount = 64;
+	const VkDeviceSize bufferSize = sizeof(float) * kCount;
+
+	// Create device-local storage buffer (GPU writes)
+	VkBuffer storageBuffer = VK_NULL_HANDLE;
+	VkDeviceMemory storageBufferMemory = VK_NULL_HANDLE;
+	{
+		VkBufferCreateInfo bufferInfo{};
+		bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+		bufferInfo.size = bufferSize;
+		bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+		bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+		if (vkCreateBuffer(m_device, &bufferInfo, nullptr, &storageBuffer) != VK_SUCCESS)
+		{
+			throw std::runtime_error("Failed to create storage buffer.");
+		}
+
+		VkMemoryRequirements memReq{};
+		vkGetBufferMemoryRequirements(m_device, storageBuffer, &memReq);
+
+		VkPhysicalDeviceMemoryProperties memProperties{};
+		vkGetPhysicalDeviceMemoryProperties(m_physicalDevice, &memProperties);
+
+		uint32_t memoryTypeIndex = UINT32_MAX;
+		for (uint32_t i = 0; i < memProperties.memoryTypeCount; ++i)
+		{
+			if ((memReq.memoryTypeBits & (1u << i)) != 0 && (memProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+			{
+				memoryTypeIndex = i;
+				break;
+			}
+		}
+
+		if (memoryTypeIndex == UINT32_MAX)
+		{
+			vkDestroyBuffer(m_device, storageBuffer, nullptr);
+			throw std::runtime_error("Failed to find suitable memory type for storage buffer.");
+		}
+
+		VkMemoryAllocateInfo allocInfo{};
+		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		allocInfo.allocationSize = memReq.size;
+		allocInfo.memoryTypeIndex = memoryTypeIndex;
+
+		if (vkAllocateMemory(m_device, &allocInfo, nullptr, &storageBufferMemory) != VK_SUCCESS)
+		{
+			vkDestroyBuffer(m_device, storageBuffer, nullptr);
+			throw std::runtime_error("Failed to allocate storage buffer memory.");
+		}
+
+		vkBindBufferMemory(m_device, storageBuffer, storageBufferMemory, 0);
+	}
+
+	// Create host-visible readback buffer (transfer dst)
+	VkBuffer readbackBuffer = VK_NULL_HANDLE;
+	VkDeviceMemory readbackBufferMemory = VK_NULL_HANDLE;
+	{
+		VkBufferCreateInfo bufferInfo{};
+		bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+		bufferInfo.size = bufferSize;
+		bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+		bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+		if (vkCreateBuffer(m_device, &bufferInfo, nullptr, &readbackBuffer) != VK_SUCCESS)
+		{
+			// cleanup storage
+			vkFreeMemory(m_device, storageBufferMemory, nullptr);
+			vkDestroyBuffer(m_device, storageBuffer, nullptr);
+			throw std::runtime_error("Failed to create readback buffer.");
+		}
+
+		VkMemoryRequirements memReq{};
+		vkGetBufferMemoryRequirements(m_device, readbackBuffer, &memReq);
+
+		VkPhysicalDeviceMemoryProperties memProperties{};
+		vkGetPhysicalDeviceMemoryProperties(m_physicalDevice, &memProperties);
+
+		uint32_t memoryTypeIndex = UINT32_MAX;
+		for (uint32_t i = 0; i < memProperties.memoryTypeCount; ++i)
+		{
+			if ((memReq.memoryTypeBits & (1u << i)) != 0 && (memProperties.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) == (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+			{
+				memoryTypeIndex = i;
+				break;
+			}
+		}
+
+		if (memoryTypeIndex == UINT32_MAX)
+		{
+			vkDestroyBuffer(m_device, readbackBuffer, nullptr);
+			vkFreeMemory(m_device, storageBufferMemory, nullptr);
+			vkDestroyBuffer(m_device, storageBuffer, nullptr);
+			throw std::runtime_error("Failed to find suitable memory type for readback buffer.");
+		}
+
+		VkMemoryAllocateInfo allocInfo{};
+		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		allocInfo.allocationSize = memReq.size;
+		allocInfo.memoryTypeIndex = memoryTypeIndex;
+
+		if (vkAllocateMemory(m_device, &allocInfo, nullptr, &readbackBufferMemory) != VK_SUCCESS)
+		{
+			vkDestroyBuffer(m_device, readbackBuffer, nullptr);
+			vkFreeMemory(m_device, storageBufferMemory, nullptr);
+			vkDestroyBuffer(m_device, storageBuffer, nullptr);
+			throw std::runtime_error("Failed to allocate readback buffer memory.");
+		}
+
+		vkBindBufferMemory(m_device, readbackBuffer, readbackBufferMemory, 0);
+	}
+
+	// Descriptor layout
+	VkDescriptorSetLayoutBinding binding{};
+	binding.binding = 0;
+	binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	binding.descriptorCount = 1;
+	binding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	binding.pImmutableSamplers = nullptr;
+
+	VkDescriptorSetLayoutCreateInfo layoutInfo{};
+	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	layoutInfo.bindingCount = 1;
+	layoutInfo.pBindings = &binding;
+
+	VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
+	if (vkCreateDescriptorSetLayout(m_device, &layoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS)
+	{
+		throw std::runtime_error("Failed to create descriptor set layout.");
+	}
+
+	// Descriptor pool
+	VkDescriptorPoolSize poolSize{};
+	poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	poolSize.descriptorCount = 1;
+
+	VkDescriptorPoolCreateInfo poolInfo{};
+	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	poolInfo.maxSets = 1;
+	poolInfo.poolSizeCount = 1;
+	poolInfo.pPoolSizes = &poolSize;
+
+	VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+	if (vkCreateDescriptorPool(m_device, &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS)
+	{
+		vkDestroyDescriptorSetLayout(m_device, descriptorSetLayout, nullptr);
+		throw std::runtime_error("Failed to create descriptor pool.");
+	}
+
+	VkDescriptorSetAllocateInfo allocInfo{};
+	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	allocInfo.descriptorPool = descriptorPool;
+	allocInfo.descriptorSetCount = 1;
+	allocInfo.pSetLayouts = &descriptorSetLayout;
+
+	VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+	if (vkAllocateDescriptorSets(m_device, &allocInfo, &descriptorSet) != VK_SUCCESS)
+	{
+		vkDestroyDescriptorPool(m_device, descriptorPool, nullptr);
+		vkDestroyDescriptorSetLayout(m_device, descriptorSetLayout, nullptr);
+		throw std::runtime_error("Failed to allocate descriptor set.");
+	}
+
+	VkDescriptorBufferInfo bufferInfo{};
+	bufferInfo.buffer = storageBuffer;
+	bufferInfo.offset = 0;
+	bufferInfo.range = bufferSize;
+
+	VkWriteDescriptorSet descriptorWrite{};
+	descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	descriptorWrite.dstSet = descriptorSet;
+	descriptorWrite.dstBinding = 0;
+	descriptorWrite.dstArrayElement = 0;
+	descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	descriptorWrite.descriptorCount = 1;
+	descriptorWrite.pBufferInfo = &bufferInfo;
+
+	vkUpdateDescriptorSets(m_device, 1, &descriptorWrite, 0, nullptr);
+
+	// Load shader
+	const std::string shaderRelativePath = "shaders/planeSweepBufferSmokeTest.comp.spv";
+	std::vector<char> code = ReadShaderFile(shaderRelativePath);
+	if (code.empty())
+	{
+		UIUtility::Print("Compute shader SPIR-V not found: " + shaderRelativePath + " - ensure ShaderUtility compiles .comp to Output/Shaders at startup.\n");
+		vkDestroyDescriptorPool(m_device, descriptorPool, nullptr);
+		vkDestroyDescriptorSetLayout(m_device, descriptorSetLayout, nullptr);
+		vkFreeMemory(m_device, readbackBufferMemory, nullptr);
+		vkDestroyBuffer(m_device, readbackBuffer, nullptr);
+		vkFreeMemory(m_device, storageBufferMemory, nullptr);
+		vkDestroyBuffer(m_device, storageBuffer, nullptr);
+		return false;
+	}
+
+	VkShaderModuleCreateInfo shaderCreateInfo{};
+	shaderCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+	shaderCreateInfo.codeSize = code.size();
+	shaderCreateInfo.pCode = reinterpret_cast<const uint32_t *>(code.data());
+
+	VkShaderModule shaderModule = VK_NULL_HANDLE;
+	if (vkCreateShaderModule(m_device, &shaderCreateInfo, nullptr, &shaderModule) != VK_SUCCESS)
+	{
+		throw std::runtime_error("Failed to create shader module for storage-buffer test.");
+	}
+
+	// Pipeline layout
+	VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+	pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+	pipelineLayoutInfo.setLayoutCount = 1;
+	pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout;
+
+	VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+	if (vkCreatePipelineLayout(m_device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS)
+	{
+		vkDestroyShaderModule(m_device, shaderModule, nullptr);
+		throw std::runtime_error("Failed to create pipeline layout for storage-buffer test.");
+	}
+
+	VkPipelineShaderStageCreateInfo stageInfo{};
+	stageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	stageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+	stageInfo.module = shaderModule;
+	stageInfo.pName = "main";
+
+	VkComputePipelineCreateInfo pipelineInfo{};
+	pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+	pipelineInfo.stage = stageInfo;
+	pipelineInfo.layout = pipelineLayout;
+
+	VkPipeline pipeline = VK_NULL_HANDLE;
+	if (vkCreateComputePipelines(m_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline) != VK_SUCCESS)
+	{
+		vkDestroyPipelineLayout(m_device, pipelineLayout, nullptr);
+		vkDestroyShaderModule(m_device, shaderModule, nullptr);
+		throw std::runtime_error("Failed to create compute pipeline for storage-buffer test.");
+	}
+
+	// Command buffer
+	VkCommandBufferAllocateInfo allocInfoCmd{};
+	allocInfoCmd.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+	allocInfoCmd.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	allocInfoCmd.commandPool = m_commandPool;
+	allocInfoCmd.commandBufferCount = 1;
+
+	VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+	if (vkAllocateCommandBuffers(m_device, &allocInfoCmd, &commandBuffer) != VK_SUCCESS)
+	{
+		throw std::runtime_error("Failed to allocate command buffer for storage-buffer test.");
+	}
+
+	VkCommandBufferBeginInfo beginInfo{};
+	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+	beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+	if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS)
+	{
+		throw std::runtime_error("Failed to begin command buffer for storage-buffer test.");
+	}
+
+	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+	vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+	vkCmdDispatch(commandBuffer, 1, 1, 1);
+
+	// Barrier: ensure compute shader writes are visible to transfer
+	VkBufferMemoryBarrier bufferBarrier{};
+	bufferBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+	bufferBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+	bufferBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+	bufferBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	bufferBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	bufferBarrier.buffer = storageBuffer;
+	bufferBarrier.offset = 0;
+	bufferBarrier.size = bufferSize;
+
+	vkCmdPipelineBarrier(
+		commandBuffer,
+		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		VK_PIPELINE_STAGE_TRANSFER_BIT,
+		0,
+		0, nullptr,
+		1, &bufferBarrier,
+		0, nullptr
+	);
+
+	// Copy to readback buffer
+	VkBufferCopy copyRegion{};
+	copyRegion.srcOffset = 0;
+	copyRegion.dstOffset = 0;
+	copyRegion.size = bufferSize;
+	vkCmdCopyBuffer(commandBuffer, storageBuffer, readbackBuffer, 1, &copyRegion);
+
+	if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
+	{
+		throw std::runtime_error("Failed to record command buffer for storage-buffer test.");
+	}
+
+	VkFenceCreateInfo fenceInfo{};
+	fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+
+	VkFence fence = VK_NULL_HANDLE;
+	if (vkCreateFence(m_device, &fenceInfo, nullptr, &fence) != VK_SUCCESS)
+	{
+		throw std::runtime_error("Failed to create fence for storage-buffer test.");
+	}
+
+	VkSubmitInfo submitInfo{};
+	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	submitInfo.commandBufferCount = 1;
+	submitInfo.pCommandBuffers = &commandBuffer;
+
+	if (vkQueueSubmit(m_queue, 1, &submitInfo, fence) != VK_SUCCESS)
+	{
+		throw std::runtime_error("Failed to submit storage-buffer test command buffer.");
+	}
+
+	if (vkWaitForFences(m_device, 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
+	{
+		throw std::runtime_error("Failed to wait for fence for storage-buffer test.");
+	}
+
+	vkDestroyFence(m_device, fence, nullptr);
+
+	// Map readback memory and verify
+	void *mapped = nullptr;
+	vkMapMemory(m_device, readbackBufferMemory, 0, bufferSize, 0, &mapped);
+
+	float *data = reinterpret_cast<float *>(mapped);
+	bool allMatched = true;
+	constexpr float kEps = 1e-6f;
+	for (uint32_t i = 0; i < kCount; ++i)
+	{
+		const float expected = 123.0f + static_cast<float>(i) * 0.25f;
+		const float actual = data[i];
+		const float absErr = std::fabs(expected - actual);
+		if (absErr > kEps)
+		{
+			UIUtility::Print(std::string("PlaneSweep GPU storage-buffer smoke test failed at index ") + std::to_string(i) + ": expected " + std::to_string(expected) + ", actual " + std::to_string(actual) + ", absErr " + std::to_string(absErr) + "\n");
+			allMatched = false;
+			break;
+		}
+	}
+
+	vkUnmapMemory(m_device, readbackBufferMemory);
+
+	if (allMatched)
+	{
+		UIUtility::Print("PlaneSweep GPU storage-buffer smoke test succeeded:\n64 / 64 values matched.\n");
+	}
+
+	// Cleanup
+	vkFreeCommandBuffers(m_device, m_commandPool, 1, &commandBuffer);
+	vkDestroyPipeline(m_device, pipeline, nullptr);
+	vkDestroyPipelineLayout(m_device, pipelineLayout, nullptr);
+	vkDestroyShaderModule(m_device, shaderModule, nullptr);
+	vkDestroyDescriptorPool(m_device, descriptorPool, nullptr);
+	vkDestroyDescriptorSetLayout(m_device, descriptorSetLayout, nullptr);
+	vkFreeMemory(m_device, readbackBufferMemory, nullptr);
+	vkDestroyBuffer(m_device, readbackBuffer, nullptr);
+	vkFreeMemory(m_device, storageBufferMemory, nullptr);
+	vkDestroyBuffer(m_device, storageBuffer, nullptr);
+
+	return allMatched;
+}
+
+bool PlaneSweepGpu::RunCameraLayoutSmokeTest(void)
+{
+	if (!m_initialized)
+	{
+		throw std::runtime_error("PlaneSweepGpu not initialized.");
+	}
+
+	// Prepare 3 synthetic records for intrinsics and poses
+	constexpr uint32_t kCount = 3u;
+	const VkDeviceSize intrinsicsSize = sizeof(GpuCameraIntrinsics) * kCount;
+	const VkDeviceSize posesSize = sizeof(GpuCameraPose) * kCount;
+
+	// Create and populate staging buffers (host-visible coherent)
+	auto createHostBuffer = [&](VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer &buffer, VkDeviceMemory &memory)
+	{
+		VkBufferCreateInfo bufInfo{};
+		bufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+		bufInfo.size = size;
+		bufInfo.usage = usage;
+		bufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+		if (vkCreateBuffer(m_device, &bufInfo, nullptr, &buffer) != VK_SUCCESS)
+		{
+			throw std::runtime_error("Failed to create staging buffer.");
+		}
+
+		VkMemoryRequirements memReq{};
+		vkGetBufferMemoryRequirements(m_device, buffer, &memReq);
+
+		VkPhysicalDeviceMemoryProperties memProps{};
+		vkGetPhysicalDeviceMemoryProperties(m_physicalDevice, &memProps);
+
+		uint32_t memType = UINT32_MAX;
+		for (uint32_t i = 0; i < memProps.memoryTypeCount; ++i)
+		{
+			if ((memReq.memoryTypeBits & (1u << i)) != 0 && (memProps.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) == (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+			{
+				memType = i;
+				break;
+			}
+		}
+
+		if (memType == UINT32_MAX)
+		{
+			vkDestroyBuffer(m_device, buffer, nullptr);
+			throw std::runtime_error("No suitable memory type for staging buffer.");
+		}
+
+		VkMemoryAllocateInfo alloc{};
+		alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		alloc.allocationSize = memReq.size;
+		alloc.memoryTypeIndex = memType;
+
+		if (vkAllocateMemory(m_device, &alloc, nullptr, &memory) != VK_SUCCESS)
+		{
+			vkDestroyBuffer(m_device, buffer, nullptr);
+			throw std::runtime_error("Failed to allocate staging memory.");
+		}
+
+		vkBindBufferMemory(m_device, buffer, memory, 0);
+	};
+
+	VkBuffer stagingIntrinsics = VK_NULL_HANDLE; VkDeviceMemory stagingIntrinsicsMem = VK_NULL_HANDLE;
+	VkBuffer stagingPoses = VK_NULL_HANDLE; VkDeviceMemory stagingPosesMem = VK_NULL_HANDLE;
+	createHostBuffer(intrinsicsSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, stagingIntrinsics, stagingIntrinsicsMem);
+	createHostBuffer(posesSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, stagingPoses, stagingPosesMem);
+
+	// Fill staging with deterministic synthetic data
+	// Zero-initialize then set fields
+	std::vector<GpuCameraIntrinsics> intrinsics(kCount);
+	std::vector<GpuCameraPose> poses(kCount);
+
+	// Record 0
+	intrinsics[0] = GpuCameraIntrinsics{};
+	intrinsics[0].m_width = 641; intrinsics[0].m_height = 479;
+	intrinsics[0].m_fx = 501.25f; intrinsics[0].m_fy = 502.50f;
+	intrinsics[0].m_cx = 319.75f; intrinsics[0].m_cy = 240.125f;
+	intrinsics[0].m_k1 = 0.011f; intrinsics[0].m_k2 = -0.022f; intrinsics[0].m_p1 = 0.0035f; intrinsics[0].m_p2 = -0.0045f;
+
+	poses[0] = GpuCameraPose{};
+	poses[0].m_position[0] = 1.25f; poses[0].m_position[1] = -2.5f; poses[0].m_position[2] = 3.75f; poses[0].m_position[3] = 0.0f;
+	poses[0].m_forward[0] = 0.11f; poses[0].m_forward[1] = 0.22f; poses[0].m_forward[2] = 0.93f; poses[0].m_forward[3] = 0.0f;
+	poses[0].m_up[0] = -0.17f; poses[0].m_up[1] = 0.98f; poses[0].m_up[2] = 0.07f; poses[0].m_up[3] = 0.0f;
+	poses[0].m_right[0] = 0.97f; poses[0].m_right[1] = 0.19f; poses[0].m_right[2] = -0.13f; poses[0].m_right[3] = 0.0f;
+
+	// Record 1
+	intrinsics[1] = GpuCameraIntrinsics{};
+	intrinsics[1].m_width = 1283; intrinsics[1].m_height = 721;
+	intrinsics[1].m_fx = 812.75f; intrinsics[1].m_fy = 810.125f;
+	intrinsics[1].m_cx = 640.5f; intrinsics[1].m_cy = 360.25f;
+	intrinsics[1].m_k1 = -0.013f; intrinsics[1].m_k2 = 0.027f; intrinsics[1].m_p1 = -0.0055f; intrinsics[1].m_p2 = 0.0065f;
+
+	poses[1] = GpuCameraPose{};
+	poses[1].m_position[0] = -10.0f; poses[1].m_position[1] = 5.5f; poses[1].m_position[2] = 0.125f; poses[1].m_position[3] = 0.0f;
+	poses[1].m_forward[0] = -0.3f; poses[1].m_forward[1] = 0.4f; poses[1].m_forward[2] = 0.866f; poses[1].m_forward[3] = 0.0f;
+	poses[1].m_up[0] = 0.0f; poses[1].m_up[1] = 1.0f; poses[1].m_up[2] = 0.0f; poses[1].m_up[3] = 0.0f;
+	poses[1].m_right[0] = 0.953f; poses[1].m_right[1] = -0.289f; poses[1].m_right[2] = 0.089f; poses[1].m_right[3] = 0.0f;
+
+	// Record 2
+	intrinsics[2] = GpuCameraIntrinsics{};
+	intrinsics[2].m_width = 1920; intrinsics[2].m_height = 1080;
+	intrinsics[2].m_fx = 1000.0f; intrinsics[2].m_fy = 999.5f;
+	intrinsics[2].m_cx = 960.0f; intrinsics[2].m_cy = 540.0f;
+	intrinsics[2].m_k1 = 0.0f; intrinsics[2].m_k2 = 0.0f; intrinsics[2].m_p1 = 0.0f; intrinsics[2].m_p2 = 0.0f;
+
+	poses[2] = GpuCameraPose{};
+	poses[2].m_position[0] = 100.0f; poses[2].m_position[1] = -100.0f; poses[2].m_position[2] = 50.5f; poses[2].m_position[3] = 0.0f;
+	poses[2].m_forward[0] = 0.0f; poses[2].m_forward[1] = 0.0f; poses[2].m_forward[2] = 1.0f; poses[2].m_forward[3] = 0.0f;
+	poses[2].m_up[0] = 0.0f; poses[2].m_up[1] = 1.0f; poses[2].m_up[2] = 0.0f; poses[2].m_up[3] = 0.0f;
+	poses[2].m_right[0] = 1.0f; poses[2].m_right[1] = 0.0f; poses[2].m_right[2] = 0.0f; poses[2].m_right[3] = 0.0f;
+
+	// Copy data into staging buffers
+	void *mapPtr = nullptr;
+	vkMapMemory(m_device, stagingIntrinsicsMem, 0, intrinsicsSize, 0, &mapPtr);
+	memcpy(mapPtr, intrinsics.data(), static_cast<size_t>(intrinsicsSize));
+	vkUnmapMemory(m_device, stagingIntrinsicsMem);
+
+	vkMapMemory(m_device, stagingPosesMem, 0, posesSize, 0, &mapPtr);
+	memcpy(mapPtr, poses.data(), static_cast<size_t>(posesSize));
+	vkUnmapMemory(m_device, stagingPosesMem);
+
+	// Create device-local input buffers (transfer dst | storage buffer)
+	auto createDeviceLocalBuffer = [&](VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer &buffer, VkDeviceMemory &memory)
+	{
+		VkBufferCreateInfo bufInfo{};
+		bufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+		bufInfo.size = size;
+		bufInfo.usage = usage;
+		bufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+		if (vkCreateBuffer(m_device, &bufInfo, nullptr, &buffer) != VK_SUCCESS)
+		{
+			throw std::runtime_error("Failed to create device-local buffer.");
+		}
+
+		VkMemoryRequirements memReq{};
+		vkGetBufferMemoryRequirements(m_device, buffer, &memReq);
+
+		VkPhysicalDeviceMemoryProperties memProps{};
+		vkGetPhysicalDeviceMemoryProperties(m_physicalDevice, &memProps);
+
+		uint32_t memType = UINT32_MAX;
+		for (uint32_t i = 0; i < memProps.memoryTypeCount; ++i)
+		{
+			if ((memReq.memoryTypeBits & (1u << i)) != 0 && (memProps.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+			{
+				memType = i;
+				break;
+			}
+		}
+
+		if (memType == UINT32_MAX)
+		{
+			vkDestroyBuffer(m_device, buffer, nullptr);
+			throw std::runtime_error("No suitable device-local memory type.");
+		}
+
+		VkMemoryAllocateInfo alloc{};
+		alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		alloc.allocationSize = memReq.size;
+		alloc.memoryTypeIndex = memType;
+
+		if (vkAllocateMemory(m_device, &alloc, nullptr, &memory) != VK_SUCCESS)
+		{
+			vkDestroyBuffer(m_device, buffer, nullptr);
+			throw std::runtime_error("Failed to allocate device-local memory.");
+		}
+
+		vkBindBufferMemory(m_device, buffer, memory, 0);
+	};
+
+	VkBuffer deviceIntrinsics = VK_NULL_HANDLE; VkDeviceMemory deviceIntrinsicsMem = VK_NULL_HANDLE;
+	VkBuffer devicePoses = VK_NULL_HANDLE; VkDeviceMemory devicePosesMem = VK_NULL_HANDLE;
+	createDeviceLocalBuffer(intrinsicsSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, deviceIntrinsics, deviceIntrinsicsMem);
+	createDeviceLocalBuffer(posesSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, devicePoses, devicePosesMem);
+
+	// Create device-local output buffers (storage | transfer src)
+	VkBuffer deviceIntrinsicsOut = VK_NULL_HANDLE; VkDeviceMemory deviceIntrinsicsOutMem = VK_NULL_HANDLE;
+	VkBuffer devicePosesOut = VK_NULL_HANDLE; VkDeviceMemory devicePosesOutMem = VK_NULL_HANDLE;
+	createDeviceLocalBuffer(intrinsicsSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, deviceIntrinsicsOut, deviceIntrinsicsOutMem);
+	createDeviceLocalBuffer(posesSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, devicePosesOut, devicePosesOutMem);
+
+	// Create readback buffers (host-visible coherent)
+	VkBuffer readIntrinsics = VK_NULL_HANDLE; VkDeviceMemory readIntrinsicsMem = VK_NULL_HANDLE;
+	VkBuffer readPoses = VK_NULL_HANDLE; VkDeviceMemory readPosesMem = VK_NULL_HANDLE;
+	createHostBuffer(intrinsicsSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT, readIntrinsics, readIntrinsicsMem);
+	createHostBuffer(posesSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT, readPoses, readPosesMem);
+
+	// Descriptor layout: bindings 0..3
+	std::array<VkDescriptorSetLayoutBinding,4> bindings{};
+	for (uint32_t i=0;i<4;++i)
+	{
+		bindings[i].binding = i;
+		bindings[i].descriptorCount = 1;
+		bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+		bindings[i].pImmutableSamplers = nullptr;
+	}
+
+	VkDescriptorSetLayoutCreateInfo dslInfo{};
+	dslInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	dslInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+	dslInfo.pBindings = bindings.data();
+
+	VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
+	if (vkCreateDescriptorSetLayout(m_device, &dslInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS)
+	{
+		throw std::runtime_error("Failed to create descriptor set layout for camera test.");
+	}
+
+	VkDescriptorPoolSize poolSizes[1];
+	poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	poolSizes[0].descriptorCount = 4;
+
+	VkDescriptorPoolCreateInfo poolInfo{};
+	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	poolInfo.maxSets = 1;
+	poolInfo.poolSizeCount = 1;
+	poolInfo.pPoolSizes = poolSizes;
+
+	VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+	if (vkCreateDescriptorPool(m_device, &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS)
+	{
+		vkDestroyDescriptorSetLayout(m_device, descriptorSetLayout, nullptr);
+		throw std::runtime_error("Failed to create descriptor pool for camera test.");
+	}
+
+	VkDescriptorSetAllocateInfo dsa{};
+	dsa.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	dsa.descriptorPool = descriptorPool;
+	dsa.descriptorSetCount = 1;
+	dsa.pSetLayouts = &descriptorSetLayout;
+
+	VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+	if (vkAllocateDescriptorSets(m_device, &dsa, &descriptorSet) != VK_SUCCESS)
+	{
+		vkDestroyDescriptorPool(m_device, descriptorPool, nullptr);
+		vkDestroyDescriptorSetLayout(m_device, descriptorSetLayout, nullptr);
+		throw std::runtime_error("Failed to allocate descriptor set for camera test.");
+	}
+
+	VkDescriptorBufferInfo descInfos[4];
+	descInfos[0].buffer = deviceIntrinsics; descInfos[0].offset = 0; descInfos[0].range = intrinsicsSize;
+	descInfos[1].buffer = devicePoses; descInfos[1].offset = 0; descInfos[1].range = posesSize;
+	descInfos[2].buffer = deviceIntrinsicsOut; descInfos[2].offset = 0; descInfos[2].range = intrinsicsSize;
+	descInfos[3].buffer = devicePosesOut; descInfos[3].offset = 0; descInfos[3].range = posesSize;
+
+	std::array<VkWriteDescriptorSet,4> writes{};
+	for (uint32_t i=0;i<4;++i)
+	{
+		writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[i].dstSet = descriptorSet;
+		writes[i].dstBinding = i;
+		writes[i].dstArrayElement = 0;
+		writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		writes[i].descriptorCount = 1;
+		writes[i].pBufferInfo = &descInfos[i];
+	}
+
+	vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+
+	// Load shader
+	const std::string shaderRelativePath = "shaders/planeSweepCameraLayoutSmokeTest.comp.spv";
+	std::vector<char> code = ReadShaderFile(shaderRelativePath);
+	if (code.empty())
+	{
+		UIUtility::Print("Camera layout compute shader SPIR-V not found: " + shaderRelativePath + "\n");
+		// cleanup
+		vkDestroyDescriptorPool(m_device, descriptorPool, nullptr);
+		vkDestroyDescriptorSetLayout(m_device, descriptorSetLayout, nullptr);
+		// free buffers/memory (staging + device)
+		vkFreeMemory(m_device, readPosesMem, nullptr); vkDestroyBuffer(m_device, readPoses, nullptr);
+		vkFreeMemory(m_device, readIntrinsicsMem, nullptr); vkDestroyBuffer(m_device, readIntrinsics, nullptr);
+		vkFreeMemory(m_device, devicePosesOutMem, nullptr); vkDestroyBuffer(m_device, devicePosesOut, nullptr);
+		vkFreeMemory(m_device, deviceIntrinsicsOutMem, nullptr); vkDestroyBuffer(m_device, deviceIntrinsicsOut, nullptr);
+		vkFreeMemory(m_device, devicePosesMem, nullptr); vkDestroyBuffer(m_device, devicePoses, nullptr);
+		vkFreeMemory(m_device, deviceIntrinsicsMem, nullptr); vkDestroyBuffer(m_device, deviceIntrinsics, nullptr);
+		vkFreeMemory(m_device, stagingPosesMem, nullptr); vkDestroyBuffer(m_device, stagingPoses, nullptr);
+		vkFreeMemory(m_device, stagingIntrinsicsMem, nullptr); vkDestroyBuffer(m_device, stagingIntrinsics, nullptr);
+		return false;
+	}
+
+	VkShaderModuleCreateInfo shaderCreate{};
+	shaderCreate.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+	shaderCreate.codeSize = code.size();
+	shaderCreate.pCode = reinterpret_cast<const uint32_t *>(code.data());
+
+	VkShaderModule shaderModule = VK_NULL_HANDLE;
+	if (vkCreateShaderModule(m_device, &shaderCreate, nullptr, &shaderModule) != VK_SUCCESS)
+	{
+		throw std::runtime_error("Failed to create shader module for camera test.");
+	}
+
+	VkPipelineLayoutCreateInfo plInfo{};
+	plInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+	plInfo.setLayoutCount = 1;
+	plInfo.pSetLayouts = &descriptorSetLayout;
+
+	VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+	if (vkCreatePipelineLayout(m_device, &plInfo, nullptr, &pipelineLayout) != VK_SUCCESS)
+	{
+		vkDestroyShaderModule(m_device, shaderModule, nullptr);
+		throw std::runtime_error("Failed to create pipeline layout for camera test.");
+	}
+
+	VkPipelineShaderStageCreateInfo stageInfo{};
+	stageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	stageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+	stageInfo.module = shaderModule;
+	stageInfo.pName = "main";
+
+	VkComputePipelineCreateInfo pipelineInfo{};
+	pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+	pipelineInfo.stage = stageInfo;
+	pipelineInfo.layout = pipelineLayout;
+
+	VkPipeline pipeline = VK_NULL_HANDLE;
+	if (vkCreateComputePipelines(m_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline) != VK_SUCCESS)
+	{
+		vkDestroyPipelineLayout(m_device, pipelineLayout, nullptr);
+		vkDestroyShaderModule(m_device, shaderModule, nullptr);
+		throw std::runtime_error("Failed to create compute pipeline for camera test.");
+	}
+
+	// Command buffer: copy staging -> device inputs, barrier transfer->compute read, dispatch, barrier compute->transfer, copy outputs -> readbacks
+	VkCommandBufferAllocateInfo allocCmd{};
+	allocCmd.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+	allocCmd.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	allocCmd.commandPool = m_commandPool;
+	allocCmd.commandBufferCount = 1;
+
+	VkCommandBuffer cmd = VK_NULL_HANDLE;
+	if (vkAllocateCommandBuffers(m_device, &allocCmd, &cmd) != VK_SUCCESS)
+	{
+		throw std::runtime_error("Failed to allocate command buffer for camera test.");
+	}
+
+	VkCommandBufferBeginInfo begin{};
+	begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+	begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+	if (vkBeginCommandBuffer(cmd, &begin) != VK_SUCCESS)
+	{
+		throw std::runtime_error("Failed to begin command buffer for camera test.");
+	}
+
+	// Copy staging -> device inputs
+	VkBufferCopy copyIntr{}; copyIntr.srcOffset = 0; copyIntr.dstOffset = 0; copyIntr.size = intrinsicsSize;
+	vkCmdCopyBuffer(cmd, stagingIntrinsics, deviceIntrinsics, 1, &copyIntr);
+	VkBufferCopy copyPos{}; copyPos.srcOffset = 0; copyPos.dstOffset = 0; copyPos.size = posesSize;
+	vkCmdCopyBuffer(cmd, stagingPoses, devicePoses, 1, &copyPos);
+
+	// Barrier: transfer write -> compute read for inputs
+	VkBufferMemoryBarrier inputBarriers[2]{};
+	inputBarriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+	inputBarriers[0].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	inputBarriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	inputBarriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	inputBarriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	inputBarriers[0].buffer = deviceIntrinsics; inputBarriers[0].offset = 0; inputBarriers[0].size = intrinsicsSize;
+
+	inputBarriers[1] = inputBarriers[0];
+	inputBarriers[1].buffer = devicePoses; inputBarriers[1].size = posesSize;
+
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 2, inputBarriers, 0, nullptr);
+
+	// Bind and dispatch
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+	vkCmdDispatch(cmd, kCount, 1, 1);
+
+	// Barrier: compute write -> transfer read for outputs
+	VkBufferMemoryBarrier outputBarriers[2]{};
+	outputBarriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+	outputBarriers[0].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+	outputBarriers[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+	outputBarriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	outputBarriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	outputBarriers[0].buffer = deviceIntrinsicsOut; outputBarriers[0].offset = 0; outputBarriers[0].size = intrinsicsSize;
+
+	outputBarriers[1] = outputBarriers[0];
+	outputBarriers[1].buffer = devicePosesOut; outputBarriers[1].size = posesSize;
+
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 2, outputBarriers, 0, nullptr);
+
+	// Copy outputs -> readbacks
+	VkBufferCopy copyOutIntr{}; copyOutIntr.srcOffset = 0; copyOutIntr.dstOffset = 0; copyOutIntr.size = intrinsicsSize;
+	vkCmdCopyBuffer(cmd, deviceIntrinsicsOut, readIntrinsics, 1, &copyOutIntr);
+	VkBufferCopy copyOutPos{}; copyOutPos.srcOffset = 0; copyOutPos.dstOffset = 0; copyOutPos.size = posesSize;
+	vkCmdCopyBuffer(cmd, devicePosesOut, readPoses, 1, &copyOutPos);
+
+	if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
+	{
+		throw std::runtime_error("Failed to record command buffer for camera test.");
+	}
+
+	VkFenceCreateInfo fenceInfo{}; fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+	VkFence fence = VK_NULL_HANDLE;
+	if (vkCreateFence(m_device, &fenceInfo, nullptr, &fence) != VK_SUCCESS)
+	{
+		throw std::runtime_error("Failed to create fence for camera test.");
+	}
+
+	VkSubmitInfo submit{}; submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO; submit.commandBufferCount = 1; submit.pCommandBuffers = &cmd;
+	if (vkQueueSubmit(m_queue, 1, &submit, fence) != VK_SUCCESS)
+	{
+		// ensure we clean up the fence if submit fails
+		if (fence != VK_NULL_HANDLE) { vkDestroyFence(m_device, fence, nullptr); fence = VK_NULL_HANDLE; }
+		throw std::runtime_error("Failed to submit camera test command buffer.");
+	}
+
+	if (vkWaitForFences(m_device, 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
+	{
+		// wait failed: destroy fence then report
+		if (fence != VK_NULL_HANDLE) { vkDestroyFence(m_device, fence, nullptr); fence = VK_NULL_HANDLE; }
+		throw std::runtime_error("Failed to wait for fence for camera test.");
+	}
+
+	// Destroy fence once and mark handle null to avoid accidental double-destroy
+	if (fence != VK_NULL_HANDLE) { vkDestroyFence(m_device, fence, nullptr); fence = VK_NULL_HANDLE; }
+
+	// Map readbacks and compare
+	void *mapped = nullptr;
+	vkMapMemory(m_device, readIntrinsicsMem, 0, intrinsicsSize, 0, &mapped);
+	GpuCameraIntrinsics *intrRead = reinterpret_cast<GpuCameraIntrinsics *>(mapped);
+
+	bool intrAll = true;
+	for (uint32_t i=0;i<kCount;++i)
+	{
+		const GpuCameraIntrinsics &exp = intrinsics[i];
+		const GpuCameraIntrinsics &act = intrRead[i];
+		if (exp.m_width != act.m_width || exp.m_height != act.m_height || fabs(exp.m_fx - act.m_fx) > 1e-6f || fabs(exp.m_fy - act.m_fy) > 1e-6f || fabs(exp.m_cx - act.m_cx) > 1e-6f || fabs(exp.m_cy - act.m_cy) > 1e-6f || fabs(exp.m_k1 - act.m_k1) > 1e-6f || fabs(exp.m_k2 - act.m_k2) > 1e-6f || fabs(exp.m_p1 - act.m_p1) > 1e-6f || fabs(exp.m_p2 - act.m_p2) > 1e-6f)
+		{
+			UIUtility::Print(std::string("Camera layout smoke test mismatch\nrecord: ") + std::to_string(i) + " type: GpuCameraIntrinsics\n");
+			intrAll = false;
+			break;
+		}
+	}
+	vkUnmapMemory(m_device, readIntrinsicsMem);
+
+	vkMapMemory(m_device, readPosesMem, 0, posesSize, 0, &mapped);
+	GpuCameraPose *poseRead = reinterpret_cast<GpuCameraPose *>(mapped);
+	bool poseAll = true;
+	for (uint32_t i=0;i<kCount;++i)
+	{
+		const GpuCameraPose &exp = poses[i];
+		const GpuCameraPose &act = poseRead[i];
+		for (int m=0;m<4;++m)
+		{
+			if (fabs(exp.m_position[m] - act.m_position[m]) > 1e-6f)
+			{
+				UIUtility::Print(std::string("Camera layout smoke test mismatch\nrecord: ") + std::to_string(i) + " type: GpuCameraPose field: position[" + std::to_string(m) + "]\n");
+				poseAll = false; break;
+			}
+			if (fabs(exp.m_forward[m] - act.m_forward[m]) > 1e-6f)
+			{
+				UIUtility::Print(std::string("Camera layout smoke test mismatch\nrecord: ") + std::to_string(i) + " type: GpuCameraPose field: forward[" + std::to_string(m) + "]\n");
+				poseAll = false; break;
+			}
+			if (fabs(exp.m_up[m] - act.m_up[m]) > 1e-6f)
+			{
+				UIUtility::Print(std::string("Camera layout smoke test mismatch\nrecord: ") + std::to_string(i) + " type: GpuCameraPose field: up[" + std::to_string(m) + "]\n");
+				poseAll = false; break;
+			}
+			if (fabs(exp.m_right[m] - act.m_right[m]) > 1e-6f)
+			{
+				UIUtility::Print(std::string("Camera layout smoke test mismatch\nrecord: ") + std::to_string(i) + " type: GpuCameraPose field: right[" + std::to_string(m) + "]\n");
+				poseAll = false; break;
+			}
+		}
+		if (!poseAll) break;
+	}
+	vkUnmapMemory(m_device, readPosesMem);
+
+	if (intrAll && poseAll)
+	{
+		UIUtility::Print("PlaneSweep GPU camera-layout smoke test succeeded:\n3 / 3 intrinsics records matched.\n3 / 3 pose records matched.\n");
+	}
+
+	// Cleanup all temporary resources
+	vkFreeCommandBuffers(m_device, m_commandPool, 1, &cmd);
+	vkDestroyPipeline(m_device, pipeline, nullptr);
+	vkDestroyPipelineLayout(m_device, pipelineLayout, nullptr);
+	vkDestroyShaderModule(m_device, shaderModule, nullptr);
+	vkDestroyDescriptorPool(m_device, descriptorPool, nullptr);
+	vkDestroyDescriptorSetLayout(m_device, descriptorSetLayout, nullptr);
+
+	vkFreeMemory(m_device, readPosesMem, nullptr); vkDestroyBuffer(m_device, readPoses, nullptr);
+	vkFreeMemory(m_device, readIntrinsicsMem, nullptr); vkDestroyBuffer(m_device, readIntrinsics, nullptr);
+
+	vkFreeMemory(m_device, devicePosesOutMem, nullptr); vkDestroyBuffer(m_device, devicePosesOut, nullptr);
+	vkFreeMemory(m_device, deviceIntrinsicsOutMem, nullptr); vkDestroyBuffer(m_device, deviceIntrinsicsOut, nullptr);
+
+	vkFreeMemory(m_device, devicePosesMem, nullptr); vkDestroyBuffer(m_device, devicePoses, nullptr);
+	vkFreeMemory(m_device, deviceIntrinsicsMem, nullptr); vkDestroyBuffer(m_device, deviceIntrinsics, nullptr);
+
+	vkFreeMemory(m_device, stagingPosesMem, nullptr); vkDestroyBuffer(m_device, stagingPoses, nullptr);
+	vkFreeMemory(m_device, stagingIntrinsicsMem, nullptr); vkDestroyBuffer(m_device, stagingIntrinsics, nullptr);
+
+	vkDestroyFence(m_device, fence, nullptr);
+
+	return intrAll && poseAll;
+}
+
+}

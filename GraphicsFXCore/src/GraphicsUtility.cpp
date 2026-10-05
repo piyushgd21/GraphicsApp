@@ -15,6 +15,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include "UIUtility.h"
 
 namespace graphicsFX
 {
@@ -562,6 +563,25 @@ namespace graphicsFX
 
         vkGetDeviceQueue(m_devicePtrGPU, indices.m_graphicsFamily.value(), 0, &m_graphicsQueuePtrGPU);
         vkGetDeviceQueue(m_devicePtrGPU, indices.m_presentFamily.value(), 0, &m_presentQueuePtrGPU);
+
+        // Diagnostic: report whether the selected graphics queue family also supports compute.
+        // This is a minimal, non-invasive check for Phase 2A smoke testing.
+        uint32_t selectedGraphicsFamily = indices.m_graphicsFamily.value();
+        uint32_t queueFamilyCount = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(m_physicalDevicePtrGPU, &queueFamilyCount, nullptr);
+        if (queueFamilyCount > 0)
+        {
+            std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
+            vkGetPhysicalDeviceQueueFamilyProperties(m_physicalDevicePtrGPU, &queueFamilyCount, queueFamilies.data());
+            if (selectedGraphicsFamily < queueFamilyCount)
+            {
+                const VkQueueFlags flags = queueFamilies[selectedGraphicsFamily].queueFlags;
+                std::string message = "Graphics queue family index: " + std::to_string(selectedGraphicsFamily) + "\n";
+                message += (flags & VK_QUEUE_GRAPHICS_BIT) ? "GRAPHICS: yes\n" : "GRAPHICS: no\n";
+                message += (flags & VK_QUEUE_COMPUTE_BIT) ? "COMPUTE: yes\n" : "COMPUTE: no\n";
+                UIUtility::Print(message);
+            }
+        }
     }
 
     //Creates the command pool.

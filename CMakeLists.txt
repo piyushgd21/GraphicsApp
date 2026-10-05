@@ -22,6 +22,7 @@ add_library(GraphicsFXCore STATIC
     GraphicsFXCore/src/GaussianSplatUtility.cpp
     GraphicsFXCore/src/GaussianSplatUtility.h
     GraphicsFXCore/src/GraphicsUtility.cpp
+    GraphicsFXCore/src/PlaneSweepGpu.cpp
     GraphicsFXCore/src/GraphicsUtility.h
     GraphicsFXCore/src/global.h
     GraphicsFXCore/src/InputUtility.cpp
@@ -68,6 +69,7 @@ target_compile_definitions(GraphicsFXCore PUBLIC
 
 target_include_directories(GraphicsFXCore PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/GraphicsFXCore/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/GraphicsFXCore/include
     ${CMAKE_CURRENT_SOURCE_DIR}/packages/OpenXR.Headers.1.0.10.2/include
 )
 

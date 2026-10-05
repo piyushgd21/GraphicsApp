@@ -1,0 +1,62 @@
+#version 450
+
+layout(local_size_x = 1,
+	   local_size_y = 1,
+	   local_size_z = 1) in;
+
+struct GpuCameraIntrinsics
+{
+	int width;
+	int height;
+
+	float fx;
+	float fy;
+
+	float cx;
+	float cy;
+
+	float k1;
+	float k2;
+
+	float p1;
+	float p2;
+};
+
+struct GpuCameraPose
+{
+	vec4 position;
+	vec4 forward;
+	vec4 up;
+	vec4 right;
+};
+
+layout(set = 0, binding = 0, std430) readonly buffer IntrinsicsInput
+{
+	GpuCameraIntrinsics values[];
+} intrinsicsInput;
+
+layout(set = 0, binding = 1, std430) readonly buffer PoseInput
+{
+	GpuCameraPose values[];
+} poseInput;
+
+layout(set = 0, binding = 2, std430) writeonly buffer IntrinsicsOutput
+{
+	GpuCameraIntrinsics values[];
+} intrinsicsOutput;
+
+layout(set = 0, binding = 3, std430) writeonly buffer PoseOutput
+{
+	GpuCameraPose values[];
+} poseOutput;
+
+void main()
+{
+	uint i = gl_GlobalInvocationID.x;
+
+	if (i >= 3)
+		return;
+
+	intrinsicsOutput.values[i] = intrinsicsInput.values[i];
+	poseOutput.values[i] = poseInput.values[i];
+}

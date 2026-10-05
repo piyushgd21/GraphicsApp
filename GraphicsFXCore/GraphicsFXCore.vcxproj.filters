@@ -92,6 +92,9 @@
     <ClCompile Include="src\GaussianSplatStreamLoader.cpp">
       <Filter>Source Files\Utilities</Filter>
     </ClCompile>
+    <ClCompile Include="src\PlaneSweepGpu.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\GraphicsUtility.h">
@@ -180,6 +183,12 @@
     </ClInclude>
     <ClInclude Include="src\SceneObjectGaussianSplat.h">
       <Filter>Header Files\SceneObjects</Filter>
+    </ClInclude>
+    <ClInclude Include="include\PlaneSweepGpuTypes.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\PlaneSweepGpu.h">
+      <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

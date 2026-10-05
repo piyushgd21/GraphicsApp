@@ -57,7 +57,7 @@
       <TreatWarningAsError>true</TreatWarningAsError>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(VULKAN_SDK)\Include;$(ProjectDir)..\packages\OpenXR.Headers.1.0.10.2\include;$(ProjectDir)src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(VULKAN_SDK)\Include;$(ProjectDir)..\packages\OpenXR.Headers.1.0.10.2\include;$(ProjectDir)src;$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <ConformanceMode>true</ConformanceMode>
     </ClCompile>
@@ -85,6 +85,7 @@
     <ClCompile Include="src\MultiViewUtility.cpp" />
     <ClCompile Include="src\OpenXRUtility.cpp" />
     <ClCompile Include="src\PathUtility.cpp" />
+    <ClCompile Include="src\PlaneSweepGpu.cpp" />
     <ClCompile Include="src\SceneObject.cpp" />
     <ClCompile Include="src\SetupUtility.cpp" />
     <ClCompile Include="src\ShaderUtility.cpp" />
@@ -95,6 +96,8 @@
     <ClCompile Include="src\Window.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="include\PlaneSweepGpu.h" />
+    <ClInclude Include="include\PlaneSweepGpuTypes.h" />
     <ClInclude Include="src\Camera.h" />
     <ClInclude Include="src\EngineCore.h" />
     <ClInclude Include="src\GaussianSplatStreamLoader.h" />

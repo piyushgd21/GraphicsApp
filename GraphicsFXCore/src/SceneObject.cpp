@@ -1752,13 +1752,15 @@ namespace graphicsFX
             const std::streampos endPosition = file.tellg();
             if (endPosition == std::streampos(-1))
             {
+                file.close();
                 continue;
             }
 
             const std::size_t fileSize = static_cast<std::size_t>(endPosition);
             if (fileSize == 0)
             {
-                return {};
+                file.close();
+                continue;
             }
 
             std::vector<char> buffer(fileSize);
@@ -1768,7 +1770,7 @@ namespace graphicsFX
             return buffer;
         }
 
-        throw std::runtime_error("Failed to open scene object shader file.");
+        throw std::runtime_error("Failed to read shader file: " + relativePath);
     }
 
     //Returns the Vulkan-safe line width for this object.
