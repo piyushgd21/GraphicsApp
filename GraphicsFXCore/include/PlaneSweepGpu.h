@@ -11,6 +11,7 @@ namespace graphicsFX
 	struct TextureData;
 	struct GpuCameraIntrinsics;
 	struct GpuCameraPose;
+	struct PlaneSweepGpuParams;
 
 	class PlaneSweepGpu
 	{
@@ -70,6 +71,17 @@ namespace graphicsFX
 			const std::vector<float> &expectedBestCosts,
 			const std::vector<float> &expectedSecondBestCosts,
 			const std::vector<int32_t> &expectedBestPlanes
+		);
+		bool RunDepthMapSmokeTest(
+			const std::vector<uint8_t> &referencePixels,
+			const std::vector<uint8_t> &sourcePixels,
+			const std::vector<GpuCameraIntrinsics> &intrinsics,
+			const std::vector<GpuCameraPose> &poses,
+			const PlaneSweepGpuParams &params,
+			const std::vector<uint32_t> &sourceMetadata,
+			const std::vector<float> &expectedDepthMap,
+			const std::vector<uint32_t> &expectedSampleMappings,
+			const std::vector<uint32_t> &expectedSampleStatuses
 		);
 		bool RunMultiSourceCostSmokeTest(
 			const std::vector<uint8_t> &referencePixels,
