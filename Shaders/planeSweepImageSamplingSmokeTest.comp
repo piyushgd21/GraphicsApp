@@ -1,0 +1,30 @@
+#version 450
+
+layout(local_size_x = 16,
+	   local_size_y = 1,
+	   local_size_z = 1) in;
+
+layout(set = 0, binding = 0)
+uniform sampler2D testImage;
+
+layout(set = 0, binding = 1, std430)
+buffer OutputBuffer
+{
+	vec4 values[];
+} outputBuffer;
+
+void main()
+{
+	uint i = gl_GlobalInvocationID.x;
+
+	if (i >= 16)
+		return;
+
+	uint x = i % 4;
+	uint y = i / 4;
+
+	vec2 uv = (vec2(float(x), float(y)) + vec2(0.5))
+			/ vec2(4.0, 4.0);
+
+	outputBuffer.values[i] = texture(testImage, uv);
+}

@@ -339,12 +339,11 @@ namespace graphicsFX
 
                             try
                             {
-                                // Run camera-conversion smoke test (Phase 2D). Do not run the
-                                // older storage-buffer or layout smoke tests automatically at startup.
-                                const bool conversionOk = smokeTest.RunCameraConversionSmokeTest();
-                                if (!conversionOk)
+                                // Run only the newest image-sampling smoke test at startup.
+                                const bool imageSamplingOk = smokeTest.RunImageSamplingSmokeTest();
+                                if (!imageSamplingOk)
                                 {
-                                    UIUtility::Print("PlaneSweep GPU camera-conversion smoke test failed.\n");
+                                    UIUtility::Print("PlaneSweep GPU image-sampling smoke test failed.\n");
                                 }
                             }
                             catch (const std::exception &ex)
