@@ -418,8 +418,262 @@ void PlaneSweepGpu::Initialize(VkDevice device, VkPhysicalDevice physicalDevice,
 	m_physicalDevice = physicalDevice;
 	m_queue = queue;
 	m_commandPool = commandPool;
+	m_shaderSampledImageArrayDynamicIndexingEnabled = false;
 
 	m_initialized = true;
+}
+
+bool PlaneSweepGpu::ShaderSampledImageArrayDynamicIndexingEnabled(void) const
+{
+	return m_shaderSampledImageArrayDynamicIndexingEnabled;
+}
+
+bool PlaneSweepGpu::RunMultiSourceDescriptorSmokeTest(void)
+{
+	if (!m_initialized) throw std::runtime_error("PlaneSweepGpu not initialized.");
+
+	constexpr uint32_t kSourceCount = MAX_PLANE_SWEEP_SOURCE_IMAGES;
+	constexpr uint32_t kImageCount = 2 + 2 * kSourceCount;
+	constexpr VkDeviceSize kOutputBytes = 18 * 4 * sizeof(float);
+	constexpr VkFormat kFormat = VK_FORMAT_R8G8B8A8_UNORM;
+	const std::array<std::array<uint8_t, 4>, kImageCount> colors{{
+		{{11, 12, 13, 14}}, {{21, 22, 23, 24}},
+		{{31, 32, 33, 34}}, {{41, 42, 43, 44}}, {{51, 52, 53, 54}}, {{61, 62, 63, 64}},
+		{{71, 72, 73, 74}}, {{81, 82, 83, 84}}, {{91, 92, 93, 94}}, {{101, 102, 103, 104}},
+		{{111, 112, 113, 114}}, {{121, 122, 123, 124}}, {{131, 132, 133, 134}}, {{141, 142, 143, 144}},
+		{{151, 152, 153, 154}}, {{161, 162, 163, 164}}, {{171, 172, 173, 174}}, {{181, 182, 183, 184}}
+	}};
+
+	VkPhysicalDeviceFeatures supportedFeatures{};
+	vkGetPhysicalDeviceFeatures(m_physicalDevice, &supportedFeatures);
+	VkPhysicalDeviceProperties properties{};
+	vkGetPhysicalDeviceProperties(m_physicalDevice, &properties);
+	const VkPhysicalDeviceLimits &limits = properties.limits;
+	const bool supported = supportedFeatures.shaderSampledImageArrayDynamicIndexing == VK_TRUE;
+	const bool enabled = ShaderSampledImageArrayDynamicIndexingEnabled();
+	UIUtility::Print("PlaneSweep GPU descriptor limits for " + std::string(properties.deviceName) + ":\n");
+	UIUtility::Print("maxPerStageDescriptorSamplers: " + std::to_string(limits.maxPerStageDescriptorSamplers) + "\n");
+	UIUtility::Print("maxPerStageDescriptorSampledImages: " + std::to_string(limits.maxPerStageDescriptorSampledImages) + "\n");
+	UIUtility::Print("maxDescriptorSetSamplers: " + std::to_string(limits.maxDescriptorSetSamplers) + "\n");
+	UIUtility::Print("maxDescriptorSetSampledImages: " + std::to_string(limits.maxDescriptorSetSampledImages) + "\n");
+	UIUtility::Print("maxPerStageDescriptorStorageBuffers: " + std::to_string(limits.maxPerStageDescriptorStorageBuffers) + "\n");
+	UIUtility::Print("maxDescriptorSetStorageBuffers: " + std::to_string(limits.maxDescriptorSetStorageBuffers) + "\n");
+	UIUtility::Print("maxPerStageResources: " + std::to_string(limits.maxPerStageResources) + "\n");
+	UIUtility::Print(std::string("shaderSampledImageArrayDynamicIndexing supported: ") + (supported ? "yes\n" : "no\n"));
+	UIUtility::Print(std::string("shaderSampledImageArrayDynamicIndexing enabled by logical device: ") + (enabled ? "yes\n" : "no\n"));
+
+	bool limitsSufficient = true;
+	auto checkLimit = [&](const char *name, uint32_t actual, uint32_t required)
+	{
+		if (actual < required)
+		{
+			UIUtility::Print(std::string("PlaneSweep GPU descriptor smoke test stopped: limiting property ") + name + "=" + std::to_string(actual) + ", required=" + std::to_string(required) + ".\n");
+			limitsSufficient = false;
+		}
+	};
+	checkLimit("maxPerStageDescriptorSamplers", limits.maxPerStageDescriptorSamplers, 18);
+	checkLimit("maxPerStageDescriptorSampledImages", limits.maxPerStageDescriptorSampledImages, 18);
+	checkLimit("maxDescriptorSetSamplers", limits.maxDescriptorSetSamplers, 18);
+	checkLimit("maxDescriptorSetSampledImages", limits.maxDescriptorSetSampledImages, 18);
+	checkLimit("maxPerStageDescriptorStorageBuffers", limits.maxPerStageDescriptorStorageBuffers, 1);
+	checkLimit("maxDescriptorSetStorageBuffers", limits.maxDescriptorSetStorageBuffers, 1);
+	checkLimit("maxPerStageResources", limits.maxPerStageResources, 19);
+	if (!limitsSufficient) return false;
+
+	VkFormatProperties formatProperties{};
+	vkGetPhysicalDeviceFormatProperties(m_physicalDevice, kFormat, &formatProperties);
+	const VkFormatFeatureFlags requiredFormatFeatures = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+	if ((formatProperties.optimalTilingFeatures & requiredFormatFeatures) != requiredFormatFeatures)
+	{
+		UIUtility::Print("PlaneSweep GPU descriptor smoke test stopped: VK_FORMAT_R8G8B8A8_UNORM lacks optimal sampled-image or transfer-destination support.\n");
+		return false;
+	}
+
+	VkBuffer stagingBuffer = VK_NULL_HANDLE, outputBuffer = VK_NULL_HANDLE, readbackBuffer = VK_NULL_HANDLE;
+	VkDeviceMemory stagingMemory = VK_NULL_HANDLE, outputMemory = VK_NULL_HANDLE, readbackMemory = VK_NULL_HANDLE;
+	std::array<VkImage, kImageCount> images{};
+	std::array<VkDeviceMemory, kImageCount> imageMemories{};
+	std::array<VkImageView, kImageCount> imageViews{};
+	VkSampler sampler = VK_NULL_HANDLE;
+	VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
+	VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+	VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+	VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+	VkShaderModule shaderModule = VK_NULL_HANDLE;
+	VkPipeline pipeline = VK_NULL_HANDLE;
+	VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+	VkFence fence = VK_NULL_HANDLE;
+	bool submitted = false;
+	auto cleanup = [&]()
+	{
+		if (submitted) { vkDeviceWaitIdle(m_device); submitted = false; }
+		if (fence != VK_NULL_HANDLE) { vkDestroyFence(m_device, fence, nullptr); fence = VK_NULL_HANDLE; }
+		if (commandBuffer != VK_NULL_HANDLE) { vkFreeCommandBuffers(m_device, m_commandPool, 1, &commandBuffer); commandBuffer = VK_NULL_HANDLE; }
+		if (pipeline != VK_NULL_HANDLE) { vkDestroyPipeline(m_device, pipeline, nullptr); pipeline = VK_NULL_HANDLE; }
+		if (shaderModule != VK_NULL_HANDLE) { vkDestroyShaderModule(m_device, shaderModule, nullptr); shaderModule = VK_NULL_HANDLE; }
+		if (pipelineLayout != VK_NULL_HANDLE) { vkDestroyPipelineLayout(m_device, pipelineLayout, nullptr); pipelineLayout = VK_NULL_HANDLE; }
+		if (descriptorPool != VK_NULL_HANDLE) { vkDestroyDescriptorPool(m_device, descriptorPool, nullptr); descriptorPool = VK_NULL_HANDLE; descriptorSet = VK_NULL_HANDLE; }
+		if (descriptorSetLayout != VK_NULL_HANDLE) { vkDestroyDescriptorSetLayout(m_device, descriptorSetLayout, nullptr); descriptorSetLayout = VK_NULL_HANDLE; }
+		if (sampler != VK_NULL_HANDLE) { vkDestroySampler(m_device, sampler, nullptr); sampler = VK_NULL_HANDLE; }
+		for (uint32_t i = 0; i < kImageCount; ++i)
+		{
+			if (imageViews[i] != VK_NULL_HANDLE) { vkDestroyImageView(m_device, imageViews[i], nullptr); imageViews[i] = VK_NULL_HANDLE; }
+			if (images[i] != VK_NULL_HANDLE) { vkDestroyImage(m_device, images[i], nullptr); images[i] = VK_NULL_HANDLE; }
+			if (imageMemories[i] != VK_NULL_HANDLE) { vkFreeMemory(m_device, imageMemories[i], nullptr); imageMemories[i] = VK_NULL_HANDLE; }
+		}
+		auto destroyBuffer = [&](VkBuffer &buffer, VkDeviceMemory &memory)
+		{
+			if (buffer != VK_NULL_HANDLE) { vkDestroyBuffer(m_device, buffer, nullptr); buffer = VK_NULL_HANDLE; }
+			if (memory != VK_NULL_HANDLE) { vkFreeMemory(m_device, memory, nullptr); memory = VK_NULL_HANDLE; }
+		};
+		destroyBuffer(stagingBuffer, stagingMemory);
+		destroyBuffer(outputBuffer, outputMemory);
+		destroyBuffer(readbackBuffer, readbackMemory);
+	};
+	auto findMemoryType = [&](uint32_t bits, VkMemoryPropertyFlags required)
+	{
+		VkPhysicalDeviceMemoryProperties memoryProperties{};
+		vkGetPhysicalDeviceMemoryProperties(m_physicalDevice, &memoryProperties);
+		for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i)
+			if ((bits & (1u << i)) && (memoryProperties.memoryTypes[i].propertyFlags & required) == required) return i;
+		return UINT32_MAX;
+	};
+	auto createBuffer = [&](VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags flags, VkBuffer &buffer, VkDeviceMemory &memory)
+	{
+		VkBufferCreateInfo info{}; info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO; info.size = size; info.usage = usage; info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		if (vkCreateBuffer(m_device, &info, nullptr, &buffer) != VK_SUCCESS) throw std::runtime_error("Failed to create multi-source descriptor buffer.");
+		VkMemoryRequirements requirements{}; vkGetBufferMemoryRequirements(m_device, buffer, &requirements);
+		const uint32_t type = findMemoryType(requirements.memoryTypeBits, flags);
+		if (type == UINT32_MAX) throw std::runtime_error("No suitable memory type for multi-source descriptor buffer.");
+		VkMemoryAllocateInfo allocation{}; allocation.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO; allocation.allocationSize = requirements.size; allocation.memoryTypeIndex = type;
+		if (vkAllocateMemory(m_device, &allocation, nullptr, &memory) != VK_SUCCESS || vkBindBufferMemory(m_device, buffer, memory, 0) != VK_SUCCESS) throw std::runtime_error("Failed to allocate or bind multi-source descriptor buffer memory.");
+	};
+	try
+	{
+		constexpr VkDeviceSize stagingBytes = kImageCount * 4;
+		createBuffer(stagingBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingMemory);
+		void *mapped = nullptr;
+		if (vkMapMemory(m_device, stagingMemory, 0, stagingBytes, 0, &mapped) != VK_SUCCESS) throw std::runtime_error("Failed to map synthetic image staging memory.");
+		std::memcpy(mapped, colors.data(), static_cast<size_t>(stagingBytes));
+		vkUnmapMemory(m_device, stagingMemory);
+
+		for (uint32_t i = 0; i < kImageCount; ++i)
+		{
+			VkImageCreateInfo imageInfo{}; imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO; imageInfo.imageType = VK_IMAGE_TYPE_2D; imageInfo.format = kFormat;
+			imageInfo.extent = VkExtent3D{ 1, 1, 1 }; imageInfo.mipLevels = 1; imageInfo.arrayLayers = 1; imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+			imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL; imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT; imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE; imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+			if (vkCreateImage(m_device, &imageInfo, nullptr, &images[i]) != VK_SUCCESS) throw std::runtime_error("Failed to create synthetic descriptor image.");
+			VkMemoryRequirements requirements{}; vkGetImageMemoryRequirements(m_device, images[i], &requirements);
+			const uint32_t type = findMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+			if (type == UINT32_MAX) throw std::runtime_error("No device-local memory for synthetic descriptor image.");
+			VkMemoryAllocateInfo allocation{}; allocation.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO; allocation.allocationSize = requirements.size; allocation.memoryTypeIndex = type;
+			if (vkAllocateMemory(m_device, &allocation, nullptr, &imageMemories[i]) != VK_SUCCESS || vkBindImageMemory(m_device, images[i], imageMemories[i], 0) != VK_SUCCESS) throw std::runtime_error("Failed to allocate or bind synthetic descriptor image memory.");
+			VkImageViewCreateInfo view{}; view.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO; view.image = images[i]; view.viewType = VK_IMAGE_VIEW_TYPE_2D; view.format = kFormat; view.subresourceRange = VkImageSubresourceRange{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+			if (vkCreateImageView(m_device, &view, nullptr, &imageViews[i]) != VK_SUCCESS) throw std::runtime_error("Failed to create synthetic descriptor image view.");
+		}
+		VkSamplerCreateInfo samplerInfo{}; samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO; samplerInfo.magFilter = VK_FILTER_NEAREST; samplerInfo.minFilter = VK_FILTER_NEAREST; samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+		samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE; samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE; samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		samplerInfo.anisotropyEnable = VK_FALSE; samplerInfo.compareEnable = VK_FALSE; samplerInfo.minLod = 0.0f; samplerInfo.maxLod = 0.0f; samplerInfo.unnormalizedCoordinates = VK_FALSE;
+		if (vkCreateSampler(m_device, &samplerInfo, nullptr, &sampler) != VK_SUCCESS) throw std::runtime_error("Failed to create synthetic descriptor sampler.");
+
+		std::array<VkDescriptorSetLayoutBinding, 5> bindings{};
+		for (uint32_t i = 0; i < bindings.size(); ++i) { bindings[i].binding = i; bindings[i].descriptorType = i == 4 ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; bindings[i].descriptorCount = (i == 2 || i == 3) ? kSourceCount : 1; bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT; }
+		VkDescriptorSetLayoutCreateInfo setLayoutInfo{}; setLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO; setLayoutInfo.bindingCount = static_cast<uint32_t>(bindings.size()); setLayoutInfo.pBindings = bindings.data();
+		if (vkCreateDescriptorSetLayout(m_device, &setLayoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS) throw std::runtime_error("Failed to create multi-source descriptor set layout.");
+		std::array<VkDescriptorPoolSize, 2> poolSizes{{ { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 18 }, { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1 } }};
+		VkDescriptorPoolCreateInfo poolInfo{}; poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO; poolInfo.maxSets = 1; poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size()); poolInfo.pPoolSizes = poolSizes.data();
+		if (vkCreateDescriptorPool(m_device, &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS) throw std::runtime_error("Failed to create multi-source descriptor pool.");
+		VkDescriptorSetAllocateInfo setAllocate{}; setAllocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO; setAllocate.descriptorPool = descriptorPool; setAllocate.descriptorSetCount = 1; setAllocate.pSetLayouts = &descriptorSetLayout;
+		if (vkAllocateDescriptorSets(m_device, &setAllocate, &descriptorSet) != VK_SUCCESS) throw std::runtime_error("Failed to allocate multi-source descriptor set.");
+
+		createBuffer(kOutputBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, outputBuffer, outputMemory);
+		createBuffer(kOutputBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, readbackBuffer, readbackMemory);
+		std::array<VkDescriptorImageInfo, 2> referenceInfos{};
+		for (uint32_t i = 0; i < 2; ++i) { referenceInfos[i].sampler = sampler; referenceInfos[i].imageView = imageViews[i]; referenceInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; }
+		std::array<VkDescriptorImageInfo, kSourceCount> sourceImageInfos{}, sourceMaskInfos{};
+		for (uint32_t i = 0; i < kSourceCount; ++i)
+		{
+			sourceImageInfos[i] = VkDescriptorImageInfo{ sampler, imageViews[2 + i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+			sourceMaskInfos[i] = VkDescriptorImageInfo{ sampler, imageViews[10 + i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+		}
+		VkDescriptorBufferInfo outputInfo{ outputBuffer, 0, kOutputBytes };
+		std::array<VkWriteDescriptorSet, 5> writes{};
+		for (uint32_t i = 0; i < 5; ++i) { writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; writes[i].dstSet = descriptorSet; writes[i].dstBinding = i; writes[i].descriptorType = i == 4 ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; }
+		writes[0].descriptorCount = 1; writes[0].pImageInfo = &referenceInfos[0];
+		writes[1].descriptorCount = 1; writes[1].pImageInfo = &referenceInfos[1];
+		writes[2].dstArrayElement = 0; writes[2].descriptorCount = kSourceCount; writes[2].pImageInfo = sourceImageInfos.data();
+		writes[3].dstArrayElement = 0; writes[3].descriptorCount = kSourceCount; writes[3].pImageInfo = sourceMaskInfos.data();
+		writes[4].descriptorCount = 1; writes[4].pBufferInfo = &outputInfo;
+		vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+
+		const std::vector<char> shaderCode = ReadShaderFile("shaders/planeSweepMultiSourceDescriptorSmokeTest.comp.spv");
+		if (shaderCode.empty()) throw std::runtime_error("Failed to load multi-source descriptor smoke-test SPIR-V.");
+		VkShaderModuleCreateInfo shaderInfo{}; shaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO; shaderInfo.codeSize = shaderCode.size(); shaderInfo.pCode = reinterpret_cast<const uint32_t *>(shaderCode.data());
+		if (vkCreateShaderModule(m_device, &shaderInfo, nullptr, &shaderModule) != VK_SUCCESS) throw std::runtime_error("Failed to create multi-source descriptor shader module.");
+		VkPipelineLayoutCreateInfo layoutInfo{}; layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO; layoutInfo.setLayoutCount = 1; layoutInfo.pSetLayouts = &descriptorSetLayout;
+		if (vkCreatePipelineLayout(m_device, &layoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) throw std::runtime_error("Failed to create multi-source descriptor pipeline layout.");
+		VkPipelineShaderStageCreateInfo stage{}; stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO; stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; stage.module = shaderModule; stage.pName = "main";
+		VkComputePipelineCreateInfo pipelineInfo{}; pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO; pipelineInfo.stage = stage; pipelineInfo.layout = pipelineLayout;
+		if (vkCreateComputePipelines(m_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline) != VK_SUCCESS) throw std::runtime_error("Failed to create multi-source descriptor compute pipeline.");
+
+		VkCommandBufferAllocateInfo commandAllocate{}; commandAllocate.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO; commandAllocate.commandPool = m_commandPool; commandAllocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; commandAllocate.commandBufferCount = 1;
+		if (vkAllocateCommandBuffers(m_device, &commandAllocate, &commandBuffer) != VK_SUCCESS) throw std::runtime_error("Failed to allocate multi-source descriptor command buffer.");
+		VkCommandBufferBeginInfo commandBegin{}; commandBegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO; commandBegin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+		if (vkBeginCommandBuffer(commandBuffer, &commandBegin) != VK_SUCCESS) throw std::runtime_error("Failed to begin multi-source descriptor command buffer.");
+		std::array<VkImageMemoryBarrier, kImageCount> toTransfer{};
+		for (uint32_t i = 0; i < kImageCount; ++i) { toTransfer[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER; toTransfer[i].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; toTransfer[i].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; toTransfer[i].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; toTransfer[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; toTransfer[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; toTransfer[i].image = images[i]; toTransfer[i].subresourceRange = VkImageSubresourceRange{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }; }
+		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, kImageCount, toTransfer.data());
+		for (uint32_t i = 0; i < kImageCount; ++i)
+		{
+			VkBufferImageCopy copy{}; copy.bufferOffset = i * 4; copy.imageSubresource = VkImageSubresourceLayers{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }; copy.imageExtent = VkExtent3D{ 1, 1, 1 };
+			vkCmdCopyBufferToImage(commandBuffer, stagingBuffer, images[i], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+		}
+		std::array<VkImageMemoryBarrier, kImageCount> toShaderRead{};
+		for (uint32_t i = 0; i < kImageCount; ++i) { toShaderRead[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER; toShaderRead[i].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; toShaderRead[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT; toShaderRead[i].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; toShaderRead[i].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; toShaderRead[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; toShaderRead[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; toShaderRead[i].image = images[i]; toShaderRead[i].subresourceRange = VkImageSubresourceRange{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }; }
+		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, kImageCount, toShaderRead.data());
+		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+		vkCmdDispatch(commandBuffer, 1, 1, 1);
+		VkBufferMemoryBarrier outputBarrier{}; outputBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER; outputBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT; outputBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT; outputBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; outputBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; outputBarrier.buffer = outputBuffer; outputBarrier.size = kOutputBytes;
+		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 1, &outputBarrier, 0, nullptr);
+		VkBufferCopy outputCopy{}; outputCopy.size = kOutputBytes; vkCmdCopyBuffer(commandBuffer, outputBuffer, readbackBuffer, 1, &outputCopy);
+		VkBufferMemoryBarrier readbackBarrier{}; readbackBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER; readbackBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; readbackBarrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT; readbackBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; readbackBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; readbackBarrier.buffer = readbackBuffer; readbackBarrier.size = kOutputBytes;
+		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &readbackBarrier, 0, nullptr);
+		if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) throw std::runtime_error("Failed to end multi-source descriptor command buffer.");
+		VkFenceCreateInfo fenceInfo{}; fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+		if (vkCreateFence(m_device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) throw std::runtime_error("Failed to create multi-source descriptor fence.");
+		VkSubmitInfo submit{}; submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO; submit.commandBufferCount = 1; submit.pCommandBuffers = &commandBuffer;
+		if (vkQueueSubmit(m_queue, 1, &submit, fence) != VK_SUCCESS) throw std::runtime_error("Failed to submit multi-source descriptor command buffer.");
+		submitted = true;
+		if (vkWaitForFences(m_device, 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) throw std::runtime_error("Failed to wait for multi-source descriptor fence.");
+		submitted = false;
+		vkDestroyFence(m_device, fence, nullptr); fence = VK_NULL_HANDLE;
+		std::array<float, 18 * 4> actual{};
+		if (vkMapMemory(m_device, readbackMemory, 0, kOutputBytes, 0, &mapped) != VK_SUCCESS) throw std::runtime_error("Failed to map multi-source descriptor readback memory.");
+		std::memcpy(actual.data(), mapped, static_cast<size_t>(kOutputBytes));
+		vkUnmapMemory(m_device, readbackMemory);
+		const char *categories[kImageCount]{ "reference image", "reference mask", "source image", "source image", "source image", "source image", "source image", "source image", "source image", "source image", "source mask", "source mask", "source mask", "source mask", "source mask", "source mask", "source mask", "source mask" };
+		for (uint32_t entry = 0; entry < kImageCount; ++entry)
+		{
+			for (uint32_t channel = 0; channel < 4; ++channel)
+				if (std::fabs(actual[entry * 4 + channel] - static_cast<float>(colors[entry][channel]) / 255.0f) > 1e-6f)
+				{
+					const uint32_t sourceIndex = entry >= 10 ? entry - 10 : (entry >= 2 ? entry - 2 : 0);
+					UIUtility::Print(std::string("PlaneSweep GPU multi-source descriptor mismatch: category=") + categories[entry] + (entry >= 2 ? ", source index=" + std::to_string(sourceIndex) : std::string()) + ", channel=" + std::to_string(channel) + ", expected uint8=" + std::to_string(colors[entry][channel]) + ", expected normalized=" + std::to_string(static_cast<float>(colors[entry][channel]) / 255.0f) + ", actual GPU=" + std::to_string(actual[entry * 4 + channel]) + ", absolute error=" + std::to_string(std::fabs(actual[entry * 4 + channel] - static_cast<float>(colors[entry][channel]) / 255.0f)) + ".\n");
+					cleanup();
+					return false;
+				}
+		}
+		cleanup();
+		UIUtility::Print("PlaneSweep GPU multi-source descriptor smoke test succeeded:\nreference image descriptor matched.\nreference mask descriptor matched.\n8 / 8 source image descriptors matched.\n8 / 8 source mask descriptors matched.\nStatic switch-based source selection succeeded without dynamic descriptor indexing.\n");
+		return true;
+	}
+	catch (const std::exception &ex)
+	{
+		cleanup();
+		UIUtility::Print(std::string("PlaneSweep GPU multi-source descriptor smoke test failed: ") + ex.what() + "\n");
+		return false;
+	}
 }
 
 void PlaneSweepGpu::Clean(void)

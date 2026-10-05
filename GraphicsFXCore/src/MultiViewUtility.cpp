@@ -3319,7 +3319,12 @@ namespace graphicsFX
             {
                 UIUtility::Print("BuildColmapPlaneSweepPointCloud received PlaneSweepGpu handoff.\n");
             }
-            static_cast<void>(planeSweepGpuPtr);
+            static bool multiSourceDescriptorTestAttempted = false;
+            if (planeSweepGpuPtr != nullptr && !multiSourceDescriptorTestAttempted)
+            {
+                multiSourceDescriptorTestAttempted = true;
+                planeSweepGpuPtr->RunMultiSourceDescriptorSmokeTest();
+            }
             //Returns an empty result when plane sweep input is unavailable or disabled.
             ColmapPlaneSweepResult result;
             if (!MultiViewPlaneSweepUtility::PlaneSweepReady(colmapData, setup))

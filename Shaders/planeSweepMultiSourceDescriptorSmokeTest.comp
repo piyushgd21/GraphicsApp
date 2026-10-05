@@ -1,0 +1,71 @@
+#version 450
+
+layout(local_size_x = 8,
+	   local_size_y = 1,
+	   local_size_z = 1) in;
+
+layout(set = 0, binding = 0)
+uniform sampler2D referenceImage;
+
+layout(set = 0, binding = 1)
+uniform sampler2D referenceMask;
+
+layout(set = 0, binding = 2)
+uniform sampler2D sourceImages[8];
+
+layout(set = 0, binding = 3)
+uniform sampler2D sourceMasks[8];
+
+layout(set = 0, binding = 4, std430) writeonly buffer OutputBuffer
+{
+	vec4 values[];
+} outputBuffer;
+
+vec4 FetchSourceImage(uint index)
+{
+	switch (index)
+	{
+		case 0u: return texelFetch(sourceImages[0], ivec2(0, 0), 0);
+		case 1u: return texelFetch(sourceImages[1], ivec2(0, 0), 0);
+		case 2u: return texelFetch(sourceImages[2], ivec2(0, 0), 0);
+		case 3u: return texelFetch(sourceImages[3], ivec2(0, 0), 0);
+		case 4u: return texelFetch(sourceImages[4], ivec2(0, 0), 0);
+		case 5u: return texelFetch(sourceImages[5], ivec2(0, 0), 0);
+		case 6u: return texelFetch(sourceImages[6], ivec2(0, 0), 0);
+		case 7u: return texelFetch(sourceImages[7], ivec2(0, 0), 0);
+		default: return vec4(0.0);
+	}
+}
+
+vec4 FetchSourceMask(uint index)
+{
+	switch (index)
+	{
+		case 0u: return texelFetch(sourceMasks[0], ivec2(0, 0), 0);
+		case 1u: return texelFetch(sourceMasks[1], ivec2(0, 0), 0);
+		case 2u: return texelFetch(sourceMasks[2], ivec2(0, 0), 0);
+		case 3u: return texelFetch(sourceMasks[3], ivec2(0, 0), 0);
+		case 4u: return texelFetch(sourceMasks[4], ivec2(0, 0), 0);
+		case 5u: return texelFetch(sourceMasks[5], ivec2(0, 0), 0);
+		case 6u: return texelFetch(sourceMasks[6], ivec2(0, 0), 0);
+		case 7u: return texelFetch(sourceMasks[7], ivec2(0, 0), 0);
+		default: return vec4(0.0);
+	}
+}
+
+void main()
+{
+	uint i = gl_GlobalInvocationID.x;
+
+	if (i >= 8u)
+		return;
+
+	if (i == 0u)
+	{
+		outputBuffer.values[0] = texelFetch(referenceImage, ivec2(0, 0), 0);
+		outputBuffer.values[1] = texelFetch(referenceMask, ivec2(0, 0), 0);
+	}
+
+	outputBuffer.values[2u + i] = FetchSourceImage(i);
+	outputBuffer.values[10u + i] = FetchSourceMask(i);
+}

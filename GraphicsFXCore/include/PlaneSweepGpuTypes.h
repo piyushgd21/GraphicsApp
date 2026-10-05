@@ -87,8 +87,9 @@ namespace graphicsFX
 		// sizeof == 64
 	};
 
-	// Maximum number of source images supported by GPU version 1.
-	// This is a capacity only; CPU must detect and reject configs > capacity.
+	// Maximum number of source images supported by the GPU path. Source counts
+	// above this capacity are unsupported on GPU and must use CPU fallback or
+	// report unsupported mode; source images must never be silently truncated.
 	static constexpr uint32_t MAX_PLANE_SWEEP_SOURCE_IMAGES = 8u;
 
 	// PRODUCTION: depth buffer is a contiguous float array sized scaledWidth*scaledHeight

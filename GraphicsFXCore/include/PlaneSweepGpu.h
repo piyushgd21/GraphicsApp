@@ -22,6 +22,7 @@ namespace graphicsFX
 		bool RunImageSamplingSmokeTest(void);
 		bool RunBilinearSamplingSmokeTest(void);
 		bool RunPlaneSweepPixelSamplingSmokeTest(void);
+		bool RunMultiSourceDescriptorSmokeTest(void);
 		bool RunRealImageSamplingSmokeTest(
 			const TextureData &texture,
 			const TextureData *maskTexturePtr,
@@ -33,6 +34,7 @@ namespace graphicsFX
 			uint32_t cameraIndex
 		);
 		void Clean(void);
+		bool ShaderSampledImageArrayDynamicIndexingEnabled(void) const;
 
 	private:
 		// helpers
@@ -43,6 +45,7 @@ namespace graphicsFX
 		VkPhysicalDevice m_physicalDevice{ VK_NULL_HANDLE };
 		VkQueue m_queue{ VK_NULL_HANDLE };
 		VkCommandPool m_commandPool{ VK_NULL_HANDLE };
+		bool m_shaderSampledImageArrayDynamicIndexingEnabled{ false };
 
 		VkShaderModule m_shaderModule{ VK_NULL_HANDLE };
 		VkPipelineLayout m_pipelineLayout{ VK_NULL_HANDLE };
