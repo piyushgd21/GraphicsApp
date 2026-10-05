@@ -30,6 +30,7 @@
 #include <fstream>
 #include <functional>
 #include <limits>
+#include <numeric>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -3321,28 +3322,42 @@ namespace graphicsFX
             {
                 UIUtility::Print("BuildColmapPlaneSweepPointCloud received PlaneSweepGpu handoff.\n");
             }
-            static bool singleSourceCostTestAttempted = false;
-            if (planeSweepGpuPtr != nullptr && !singleSourceCostTestAttempted)
+            static bool multiSourceCostTestAttempted = false;
+            if (planeSweepGpuPtr != nullptr && !multiSourceCostTestAttempted)
             {
-                singleSourceCostTestAttempted = true;
+                multiSourceCostTestAttempted = true;
                 using PlaneSweepImage = MultiViewPlaneSweepUtility::PlaneSweepImage;
                 PlaneSweepImage referenceImage;
-                PlaneSweepImage sourceImage;
+                std::array<PlaneSweepImage, 4> sourceImages{};
                 referenceImage.m_camera.m_position = Float3{ 0.0f, 0.0f, 0.0f };
                 referenceImage.m_camera.m_forward = Float3{ 0.0f, 0.0f, 1.0f };
                 referenceImage.m_camera.m_up = Float3{ 0.0f, 1.0f, 0.0f };
                 referenceImage.m_camera.m_right = Float3{ 1.0f, 0.0f, 0.0f };
-                sourceImage.m_camera = referenceImage.m_camera;
                 referenceImage.m_intrinsic.m_width = 7; referenceImage.m_intrinsic.m_height = 7;
                 referenceImage.m_intrinsic.m_fx = 100.0; referenceImage.m_intrinsic.m_fy = 100.0;
                 referenceImage.m_intrinsic.m_cx = 3.5; referenceImage.m_intrinsic.m_cy = 3.5;
-                sourceImage.m_intrinsic = referenceImage.m_intrinsic;
-                sourceImage.m_intrinsic.m_cx = 3.0; sourceImage.m_intrinsic.m_cy = 3.0;
-                referenceImage.m_texture.m_width = sourceImage.m_texture.m_width = 7;
-                referenceImage.m_texture.m_height = sourceImage.m_texture.m_height = 7;
-                referenceImage.m_texture.m_channelCount = sourceImage.m_texture.m_channelCount = 4;
+                for (auto &source : sourceImages)
+                {
+                    source.m_camera = referenceImage.m_camera;
+                    source.m_intrinsic.m_width = 7; source.m_intrinsic.m_height = 7;
+                    source.m_intrinsic.m_fx = 100.0; source.m_intrinsic.m_fy = 100.0;
+                    source.m_intrinsic.m_cx = 3.0; source.m_intrinsic.m_cy = 3.0;
+                }
+                sourceImages[3].m_intrinsic.m_cx = 1000.0;
                 referenceImage.m_texture.m_pixels.resize(7 * 7 * 4);
-                sourceImage.m_texture.m_pixels.resize(7 * 7 * 4);
+                referenceImage.m_texture.m_width = referenceImage.m_texture.m_height = 7;
+                referenceImage.m_texture.m_channelCount = 4;
+                for (auto &source : sourceImages)
+                {
+                    source.m_texture.m_width = source.m_texture.m_height = 7;
+                    source.m_texture.m_channelCount = 4;
+                    source.m_texture.m_pixels.resize(7 * 7 * 4);
+                }
+                sourceImages[2].m_hasMask = true;
+                sourceImages[2].m_maskUsesAlpha = true;
+                sourceImages[2].m_maskTexture.m_width = sourceImages[2].m_maskTexture.m_height = 7;
+                sourceImages[2].m_maskTexture.m_channelCount = 4;
+                sourceImages[2].m_maskTexture.m_pixels.resize(7 * 7 * 4);
                 for (uint32_t py = 0; py < 7; ++py)
                 {
                     for (uint32_t px = 0; px < 7; ++px)
@@ -3355,77 +3370,107 @@ namespace graphicsFX
                         referenceImage.m_texture.m_pixels[pixelOffset + 1] = green;
                         referenceImage.m_texture.m_pixels[pixelOffset + 2] = blue;
                         referenceImage.m_texture.m_pixels[pixelOffset + 3] = 255;
-                        sourceImage.m_texture.m_pixels[pixelOffset] = static_cast<uint8_t>(red + 9);
-                        sourceImage.m_texture.m_pixels[pixelOffset + 1] = static_cast<uint8_t>(green + 6);
-                        sourceImage.m_texture.m_pixels[pixelOffset + 2] = static_cast<uint8_t>(blue + 3);
                         const bool lowAlpha = (px == 2 || px == 4) && (py == 2 || py == 4);
-                        sourceImage.m_texture.m_pixels[pixelOffset + 3] = lowAlpha ? 64 : 255;
+                        for (uint32_t sourceIndex = 0; sourceIndex < sourceImages.size(); ++sourceIndex)
+                        {
+                            TextureData &texture = sourceImages[sourceIndex].m_texture;
+                            if (sourceIndex == 0) { texture.m_pixels[pixelOffset] = static_cast<uint8_t>(red + 9); texture.m_pixels[pixelOffset + 1] = static_cast<uint8_t>(green + 6); texture.m_pixels[pixelOffset + 2] = static_cast<uint8_t>(blue + 3); }
+                            if (sourceIndex == 1) { texture.m_pixels[pixelOffset] = static_cast<uint8_t>(red + 3); texture.m_pixels[pixelOffset + 1] = static_cast<uint8_t>(green + 3); texture.m_pixels[pixelOffset + 2] = static_cast<uint8_t>(blue + 3); }
+                            if (sourceIndex == 2) { texture.m_pixels[pixelOffset] = static_cast<uint8_t>(red + 15); texture.m_pixels[pixelOffset + 1] = static_cast<uint8_t>(green + 9); texture.m_pixels[pixelOffset + 2] = static_cast<uint8_t>(blue + 3); }
+                            if (sourceIndex == 3) { texture.m_pixels[pixelOffset] = static_cast<uint8_t>(red + 12); texture.m_pixels[pixelOffset + 1] = static_cast<uint8_t>(green + 12); texture.m_pixels[pixelOffset + 2] = static_cast<uint8_t>(blue + 12); }
+                            texture.m_pixels[pixelOffset + 3] = sourceIndex == 2 && lowAlpha ? 64 : 255;
+                        }
+                        const size_t maskOffset = pixelOffset;
+                        sourceImages[2].m_maskTexture.m_pixels[maskOffset] = 255;
+                        sourceImages[2].m_maskTexture.m_pixels[maskOffset + 1] = 255;
+                        sourceImages[2].m_maskTexture.m_pixels[maskOffset + 2] = 255;
+                        sourceImages[2].m_maskTexture.m_pixels[maskOffset + 3] = lowAlpha ? 64 : 255;
                     }
                 }
 
                 const std::array<std::array<float, 2>, 4> projectionSamples{{ {{0.0f, 0.0f}}, {{3.0f, 3.0f}}, {{6.0f, 6.0f}}, {{2.0f, 4.0f}} }};
                 bool projectionAssumptionValid = true;
+                for (uint32_t sourceIndex = 0; sourceIndex < 3; ++sourceIndex)
+                {
+                    for (const auto &sample : projectionSamples)
+                    {
+                        const Float3 point = MultiViewPlaneSweepUtility::UnprojectPixel(referenceImage.m_camera, referenceImage.m_intrinsic, sample[0], sample[1], 2.0f);
+                        float projectedX = 0.0f, projectedY = 0.0f, projectedDepth = 0.0f;
+                        if (!MultiViewPlaneSweepUtility::ProjectPoint(sourceImages[sourceIndex].m_camera, sourceImages[sourceIndex].m_intrinsic, point, projectedX, projectedY, projectedDepth) || std::fabs(projectedX - sample[0]) > 1e-5f || std::fabs(projectedY - sample[1]) > 1e-5f)
+                        {
+                            UIUtility::Print("Phase 2M controlled source projection failed: source=" + std::to_string(sourceIndex) + ", reference=(" + std::to_string(sample[0]) + "," + std::to_string(sample[1]) + "), projected=(" + std::to_string(projectedX) + "," + std::to_string(projectedY) + ").\n");
+                            projectionAssumptionValid = false;
+                        }
+                    }
+                }
                 for (const auto &sample : projectionSamples)
                 {
                     const Float3 point = MultiViewPlaneSweepUtility::UnprojectPixel(referenceImage.m_camera, referenceImage.m_intrinsic, sample[0], sample[1], 2.0f);
                     float projectedX = 0.0f, projectedY = 0.0f, projectedDepth = 0.0f;
-                    if (!MultiViewPlaneSweepUtility::ProjectPoint(sourceImage.m_camera, sourceImage.m_intrinsic, point, projectedX, projectedY, projectedDepth) ||
-                        std::fabs(projectedX - sample[0]) > 1e-5f || std::fabs(projectedY - sample[1]) > 1e-5f)
+                    const bool projected = MultiViewPlaneSweepUtility::ProjectPoint(sourceImages[3].m_camera, sourceImages[3].m_intrinsic, point, projectedX, projectedY, projectedDepth);
+                    if (!projected || projectedX >= 0.0f && projectedX <= 6.0f)
                     {
-                        UIUtility::Print("Phase 2L controlled projection assumption failed: reference=(" + std::to_string(sample[0]) + "," + std::to_string(sample[1]) + "), source=(" + std::to_string(projectedX) + "," + std::to_string(projectedY) + "), depth=" + std::to_string(projectedDepth) + ". GPU test skipped.\n");
+                        UIUtility::Print("Phase 2M source-3 projection assumption failed: projected=" + std::to_string(projected) + ", x=" + std::to_string(projectedX) + ", y=" + std::to_string(projectedY) + ".\n");
                         projectionAssumptionValid = false;
                     }
                 }
                 if (!projectionAssumptionValid) return result;
 
-                struct CostCase { float x; float y; float depth; int patchRadius; float alphaThreshold; float minimumOpaquePatchRatio; bool expectedConceptualValidity; uint32_t expectedSamples; };
-                const std::array<CostCase, 8> cases{{
-                    {3.0f, 3.0f, 2.0f, 0, 0.5f, 1.0f, true, 1},
-                    {3.0f, 3.0f, 2.0f, 1, 0.5f, 0.5f, true, 5},
-                    {3.0f, 3.0f, 2.0f, 1, 0.5f, 0.6f, false, 5},
-                    {0.0f, 0.0f, 2.0f, 1, 0.5f, 0.4f, true, 4},
-                    {0.0f, 0.0f, 2.0f, 1, 0.5f, 0.5f, false, 4},
-                    {3.0f, 3.0f, 2.0f, 0, 1.0f, 1.0f, false, 0},
-                    {3.0f, 3.0f, 2.0f, 1, 0.2f, 1.0f, true, 9},
-                    {3.0f, 3.0f, -1.0f, 0, 0.5f, 1.0f, false, 0}
+                struct CostCase { float x, y, depth; int radius; uint32_t sourceCount, minViews; float alpha, ratio; bool expectedValid; std::array<uint32_t, 4> samples; std::array<uint32_t, 4> qualified; };
+                const std::array<CostCase, 10> cases{{
+                    {3,3,2,0,1,1,0.5f,1.0f,true,{{1,0,0,0}},{{1,0,0,0}}},
+                    {3,3,2,0,2,2,0.5f,1.0f,true,{{1,1,0,0}},{{1,1,0,0}}},
+                    {3,3,2,1,3,3,0.5f,0.5f,true,{{9,9,5,0}},{{1,1,1,0}}},
+                    {3,3,2,1,3,2,0.5f,0.6f,true,{{9,9,5,0}},{{1,1,0,0}}},
+                    {3,3,2,1,3,3,0.5f,0.6f,false,{{9,9,5,0}},{{1,1,0,0}}},
+                    {3,3,2,1,4,3,0.5f,0.5f,true,{{9,9,5,0}},{{1,1,1,0}}},
+                    {3,3,2,1,4,4,0.5f,0.5f,false,{{9,9,5,0}},{{1,1,1,0}}},
+                    {0,0,2,1,4,3,0.5f,0.4f,true,{{4,4,4,0}},{{1,1,1,0}}},
+                    {3,3,2,0,4,1,1.0f,1.0f,false,{{0,0,0,0}},{{0,0,0,0}}},
+                    {3,3,2,0,0,1,0.5f,1.0f,false,{{0,0,0,0}},{{0,0,0,0}}}
                 }};
-                std::vector<PlaneSweepImage> sourceImages{ sourceImage };
-                std::vector<float> caseValues(8 * 8, 0.0f);
-                std::vector<uint32_t> patchRadii(8);
-                std::vector<uint32_t> expectedSampleCounts(8);
-                std::vector<uint32_t> expectedMinimumSamples(8);
-                std::vector<uint32_t> expectedValidity(8);
-                std::vector<float> expectedCosts(8, 0.0f);
+                std::vector<float> caseValues(10 * 8, 0.0f);
+                std::vector<uint32_t> caseParameters(10 * 4, 0);
+                std::vector<uint32_t> sourceMetadata(16, 0);
+                sourceMetadata[4] = 1; sourceMetadata[5] = 1;
+                std::vector<uint32_t> expectedSampleCounts(10 * 8, 0), expectedValidViews(10, 0), expectedMinimumSamples(10, 0), expectedValidity(10, 0);
+                std::vector<float> expectedCosts(10, 0.0f);
                 bool cpuExpectationsMatch = true;
                 for (uint32_t i = 0; i < cases.size(); ++i)
                 {
                     const CostCase &testCase = cases[i];
                     const size_t offset = static_cast<size_t>(i) * 8;
-                    caseValues[offset] = testCase.x; caseValues[offset + 1] = testCase.y; caseValues[offset + 2] = testCase.depth;
-                    caseValues[offset + 3] = testCase.alphaThreshold; caseValues[offset + 4] = testCase.minimumOpaquePatchRatio;
-                    patchRadii[i] = static_cast<uint32_t>(testCase.patchRadius);
-                    expectedSampleCounts[i] = testCase.expectedSamples;
-                    expectedMinimumSamples[i] = static_cast<uint32_t>(std::max(1, static_cast<int>(std::ceil(static_cast<float>((testCase.patchRadius * 2 + 1) * (testCase.patchRadius * 2 + 1)) * testCase.minimumOpaquePatchRatio))));
+                    caseValues[offset] = testCase.x; caseValues[offset + 1] = testCase.y; caseValues[offset + 2] = testCase.depth; caseValues[offset + 3] = testCase.alpha; caseValues[offset + 4] = testCase.ratio;
+                    caseParameters[i * 4] = static_cast<uint32_t>(testCase.radius); caseParameters[i * 4 + 1] = testCase.sourceCount; caseParameters[i * 4 + 2] = testCase.minViews;
+                    expectedMinimumSamples[i] = static_cast<uint32_t>(std::max(1, static_cast<int>(std::ceil(static_cast<float>((testCase.radius * 2 + 1) * (testCase.radius * 2 + 1)) * testCase.ratio))));
+                    std::vector<PlaneSweepImage> activeSources(sourceImages.begin(), sourceImages.begin() + testCase.sourceCount);
                     float cpuCost = 0.0f;
-                    const bool cpuValid = MultiViewPlaneSweepUtility::ComputePlaneCost(referenceImage, sourceImages, testCase.x, testCase.y, testCase.depth, testCase.patchRadius, 1, testCase.alphaThreshold, testCase.minimumOpaquePatchRatio, cpuCost);
+                    const bool cpuValid = MultiViewPlaneSweepUtility::ComputePlaneCost(referenceImage, activeSources, testCase.x, testCase.y, testCase.depth, testCase.radius, static_cast<int>(testCase.minViews), testCase.alpha, testCase.ratio, cpuCost);
                     expectedValidity[i] = cpuValid ? 1u : 0u;
                     expectedCosts[i] = cpuCost;
-                    UIUtility::Print("Phase 2L CPU case " + std::to_string(i) + ": valid=" + (cpuValid ? "true" : "false") + ", cost=" + std::to_string(cpuCost) + "\n");
-                    if (cpuValid != testCase.expectedConceptualValidity)
+                    for (uint32_t s = 0; s < 4; ++s) expectedSampleCounts[i * 8 + s] = testCase.samples[s];
+                    expectedValidViews[i] = std::accumulate(testCase.qualified.begin(), testCase.qualified.end(), 0u);
+                    UIUtility::Print("Phase 2M CPU case " + std::to_string(i) + ": valid=" + (cpuValid ? "true" : "false") + ", cost=" + std::to_string(cpuCost) + "\n");
+                    if (cpuValid != testCase.expectedValid)
                     {
-                        UIUtility::Print("Phase 2L CPU expectation mismatch: case=" + std::to_string(i) + ", conceptual=" + (testCase.expectedConceptualValidity ? "true" : "false") + ", actual CPU=" + (cpuValid ? "true" : "false") + ", CPU cost=" + std::to_string(cpuCost) + ". GPU test skipped.\n");
+                        UIUtility::Print("Phase 2M CPU expectation mismatch: case=" + std::to_string(i) + ", expected=" + (testCase.expectedValid ? "true" : "false") + ", actual=" + (cpuValid ? "true" : "false") + ", CPU cost=" + std::to_string(cpuCost) + ". GPU test skipped.\n");
                         cpuExpectationsMatch = false;
                     }
                 }
                 if (!cpuExpectationsMatch) return result;
-                planeSweepGpuPtr->RunSingleSourceCostSmokeTest(
+                std::vector<GpuCameraIntrinsics> gpuIntrinsics{ MakeGpuCameraIntrinsics(referenceImage.m_intrinsic) };
+                std::vector<GpuCameraPose> gpuPoses{ MakeGpuCameraPose(referenceImage.m_camera) };
+                for (const auto &source : sourceImages) { gpuIntrinsics.push_back(MakeGpuCameraIntrinsics(source.m_intrinsic)); gpuPoses.push_back(MakeGpuCameraPose(source.m_camera)); }
+                planeSweepGpuPtr->RunMultiSourceCostSmokeTest(
                     referenceImage.m_texture.m_pixels,
-                    sourceImage.m_texture.m_pixels,
-                    MakeGpuCameraIntrinsicsArray(std::vector<ColmapCameraIntrinsicData>{ referenceImage.m_intrinsic, sourceImage.m_intrinsic }),
-                    MakeGpuCameraPoseArray(std::vector<ColmapCameraData>{ referenceImage.m_camera, sourceImage.m_camera }),
+                    sourceImages[0].m_texture.m_pixels, sourceImages[1].m_texture.m_pixels, sourceImages[2].m_texture.m_pixels,
+                    sourceImages[2].m_maskTexture.m_pixels, sourceImages[3].m_texture.m_pixels,
+                    gpuIntrinsics, gpuPoses,
                     caseValues,
-                    patchRadii,
+                    caseParameters,
+                    sourceMetadata,
                     expectedSampleCounts,
+                    expectedValidViews,
                     expectedMinimumSamples,
                     expectedValidity,
                     expectedCosts

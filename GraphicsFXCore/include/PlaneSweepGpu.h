@@ -54,6 +54,24 @@ namespace graphicsFX
 			const std::vector<uint32_t> &expectedValidity,
 			const std::vector<float> &expectedCosts
 		);
+		bool RunMultiSourceCostSmokeTest(
+			const std::vector<uint8_t> &referencePixels,
+			const std::vector<uint8_t> &source0Pixels,
+			const std::vector<uint8_t> &source1Pixels,
+			const std::vector<uint8_t> &source2Pixels,
+			const std::vector<uint8_t> &source2MaskPixels,
+			const std::vector<uint8_t> &source3Pixels,
+			const std::vector<GpuCameraIntrinsics> &intrinsics,
+			const std::vector<GpuCameraPose> &poses,
+			const std::vector<float> &caseValues,
+			const std::vector<uint32_t> &caseParameters,
+			const std::vector<uint32_t> &sourceMetadata,
+			const std::vector<uint32_t> &expectedSampleCounts,
+			const std::vector<uint32_t> &expectedValidViews,
+			const std::vector<uint32_t> &expectedMinimumSamples,
+			const std::vector<uint32_t> &expectedValidity,
+			const std::vector<float> &expectedCosts
+		);
 		bool RunRealImageSamplingSmokeTest(
 			const TextureData &texture,
 			const TextureData *maskTexturePtr,
