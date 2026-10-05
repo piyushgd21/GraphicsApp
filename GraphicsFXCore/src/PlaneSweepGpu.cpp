@@ -8,6 +8,7 @@
 
 #include <Windows.h>
 #include <array>
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -1069,6 +1070,275 @@ bool PlaneSweepGpu::RunProjectPointSmokeTest(
 	{
 		cleanup();
 		UIUtility::Print(std::string("PlaneSweep GPU ProjectPoint smoke test failed: ") + ex.what() + "\n");
+		return false;
+	}
+}
+
+bool PlaneSweepGpu::RunSingleSourceCostSmokeTest(
+	const std::vector<uint8_t> &referencePixels,
+	const std::vector<uint8_t> &sourcePixels,
+	const std::vector<GpuCameraIntrinsics> &intrinsics,
+	const std::vector<GpuCameraPose> &poses,
+	const std::vector<float> &caseValues,
+	const std::vector<uint32_t> &patchRadii,
+	const std::vector<uint32_t> &expectedSampleCounts,
+	const std::vector<uint32_t> &expectedMinimumSamples,
+	const std::vector<uint32_t> &expectedValidity,
+	const std::vector<float> &expectedCosts)
+{
+	if (!m_initialized) throw std::runtime_error("PlaneSweepGpu not initialized.");
+	constexpr uint32_t kCaseCount = 8;
+	constexpr VkFormat kFormat = VK_FORMAT_R8G8B8A8_UNORM;
+	constexpr VkDeviceSize kImageBytes = 7 * 7 * 4;
+	constexpr VkDeviceSize kDummyBytes = 4;
+	constexpr VkDeviceSize kOutputFloatBytes = kCaseCount * sizeof(float);
+	constexpr VkDeviceSize kOutputUintBytes = kCaseCount * sizeof(uint32_t);
+	if (referencePixels.size() != kImageBytes || sourcePixels.size() != kImageBytes || intrinsics.size() != 2 || poses.size() != 2 ||
+		caseValues.size() != kCaseCount * 8 || patchRadii.size() != kCaseCount || expectedSampleCounts.size() != kCaseCount || expectedMinimumSamples.size() != kCaseCount || expectedValidity.size() != kCaseCount || expectedCosts.size() != kCaseCount)
+		throw std::invalid_argument("Single-source cost smoke test received invalid input dimensions.");
+
+	VkFormatProperties formatProperties{}; vkGetPhysicalDeviceFormatProperties(m_physicalDevice, kFormat, &formatProperties);
+	const VkFormatFeatureFlags requiredFeatures = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+	if ((formatProperties.optimalTilingFeatures & requiredFeatures) != requiredFeatures)
+	{
+		UIUtility::Print("Single-source cost smoke test unsupported: VK_FORMAT_R8G8B8A8_UNORM optimal tiling lacks sampled-image or transfer-destination support.\n");
+		return false;
+	}
+
+	const std::array<VkDeviceSize, 4> inputSizes{{ 2 * sizeof(GpuCameraIntrinsics), 2 * sizeof(GpuCameraPose), kCaseCount * 8 * sizeof(float), kCaseCount * sizeof(uint32_t) }};
+	const std::array<const void *, 4> inputData{{ intrinsics.data(), poses.data(), caseValues.data(), patchRadii.data() }};
+	const VkDeviceSize stagingBytes = kImageBytes * 2 + kDummyBytes;
+	VkBuffer imageStaging = VK_NULL_HANDLE;
+	VkDeviceMemory imageStagingMemory = VK_NULL_HANDLE;
+	std::array<VkImage, 3> images{};
+	std::array<VkDeviceMemory, 3> imageMemories{};
+	std::array<VkImageView, 3> imageViews{};
+	VkSampler sampler = VK_NULL_HANDLE;
+	std::array<VkBuffer, 4> inputStaging{}, inputBuffers{};
+	std::array<VkDeviceMemory, 4> inputStagingMemories{}, inputMemories{};
+	std::array<VkBuffer, 4> outputBuffers{}, readbackBuffers{};
+	std::array<VkDeviceMemory, 4> outputMemories{}, readbackMemories{};
+	VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
+	VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+	VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+	VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+	VkShaderModule shaderModule = VK_NULL_HANDLE;
+	VkPipeline pipeline = VK_NULL_HANDLE;
+	VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+	VkFence fence = VK_NULL_HANDLE;
+	bool submitted = false;
+	auto cleanup = [&]()
+	{
+		if (submitted) { vkDeviceWaitIdle(m_device); submitted = false; }
+		if (fence != VK_NULL_HANDLE) { vkDestroyFence(m_device, fence, nullptr); fence = VK_NULL_HANDLE; }
+		if (commandBuffer != VK_NULL_HANDLE) { vkFreeCommandBuffers(m_device, m_commandPool, 1, &commandBuffer); commandBuffer = VK_NULL_HANDLE; }
+		if (pipeline != VK_NULL_HANDLE) { vkDestroyPipeline(m_device, pipeline, nullptr); pipeline = VK_NULL_HANDLE; }
+		if (shaderModule != VK_NULL_HANDLE) { vkDestroyShaderModule(m_device, shaderModule, nullptr); shaderModule = VK_NULL_HANDLE; }
+		if (pipelineLayout != VK_NULL_HANDLE) { vkDestroyPipelineLayout(m_device, pipelineLayout, nullptr); pipelineLayout = VK_NULL_HANDLE; }
+		if (descriptorPool != VK_NULL_HANDLE) { vkDestroyDescriptorPool(m_device, descriptorPool, nullptr); descriptorPool = VK_NULL_HANDLE; }
+		if (descriptorSetLayout != VK_NULL_HANDLE) { vkDestroyDescriptorSetLayout(m_device, descriptorSetLayout, nullptr); descriptorSetLayout = VK_NULL_HANDLE; }
+		if (sampler != VK_NULL_HANDLE) { vkDestroySampler(m_device, sampler, nullptr); sampler = VK_NULL_HANDLE; }
+		for (uint32_t i = 0; i < 3; ++i)
+		{
+			if (imageViews[i] != VK_NULL_HANDLE) { vkDestroyImageView(m_device, imageViews[i], nullptr); imageViews[i] = VK_NULL_HANDLE; }
+			if (images[i] != VK_NULL_HANDLE) { vkDestroyImage(m_device, images[i], nullptr); images[i] = VK_NULL_HANDLE; }
+			if (imageMemories[i] != VK_NULL_HANDLE) { vkFreeMemory(m_device, imageMemories[i], nullptr); imageMemories[i] = VK_NULL_HANDLE; }
+		}
+		auto destroyBuffer = [&](VkBuffer &buffer, VkDeviceMemory &memory)
+		{
+			if (buffer != VK_NULL_HANDLE) { vkDestroyBuffer(m_device, buffer, nullptr); buffer = VK_NULL_HANDLE; }
+			if (memory != VK_NULL_HANDLE) { vkFreeMemory(m_device, memory, nullptr); memory = VK_NULL_HANDLE; }
+		};
+		destroyBuffer(imageStaging, imageStagingMemory);
+		for (uint32_t i = 0; i < 4; ++i)
+		{
+			destroyBuffer(inputStaging[i], inputStagingMemories[i]);
+			destroyBuffer(inputBuffers[i], inputMemories[i]);
+			destroyBuffer(outputBuffers[i], outputMemories[i]);
+			destroyBuffer(readbackBuffers[i], readbackMemories[i]);
+		}
+	};
+	auto findMemoryType = [&](uint32_t bits, VkMemoryPropertyFlags required)
+	{
+		VkPhysicalDeviceMemoryProperties properties{}; vkGetPhysicalDeviceMemoryProperties(m_physicalDevice, &properties);
+		for (uint32_t i = 0; i < properties.memoryTypeCount; ++i)
+			if ((bits & (1u << i)) && (properties.memoryTypes[i].propertyFlags & required) == required) return i;
+		return UINT32_MAX;
+	};
+	auto createBuffer = [&](VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags flags, VkBuffer &buffer, VkDeviceMemory &memory)
+	{
+		VkBufferCreateInfo info{}; info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO; info.size = size; info.usage = usage; info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		if (vkCreateBuffer(m_device, &info, nullptr, &buffer) != VK_SUCCESS) throw std::runtime_error("Failed to create single-source cost buffer.");
+		VkMemoryRequirements requirements{}; vkGetBufferMemoryRequirements(m_device, buffer, &requirements);
+		const uint32_t type = findMemoryType(requirements.memoryTypeBits, flags);
+		if (type == UINT32_MAX) throw std::runtime_error("No suitable memory type for single-source cost buffer.");
+		VkMemoryAllocateInfo allocation{}; allocation.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO; allocation.allocationSize = requirements.size; allocation.memoryTypeIndex = type;
+		if (vkAllocateMemory(m_device, &allocation, nullptr, &memory) != VK_SUCCESS || vkBindBufferMemory(m_device, buffer, memory, 0) != VK_SUCCESS) throw std::runtime_error("Failed to allocate or bind single-source cost buffer memory.");
+	};
+	try
+	{
+		const std::array<uint8_t, 4> dummyPixel{{ 0, 0, 0, 255 }};
+		createBuffer(stagingBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, imageStaging, imageStagingMemory);
+		void *mapped = nullptr;
+		if (vkMapMemory(m_device, imageStagingMemory, 0, stagingBytes, 0, &mapped) != VK_SUCCESS) throw std::runtime_error("Failed to map single-source image staging memory.");
+		std::memcpy(mapped, referencePixels.data(), static_cast<size_t>(kImageBytes));
+		std::memcpy(static_cast<uint8_t *>(mapped) + kImageBytes, sourcePixels.data(), static_cast<size_t>(kImageBytes));
+		std::memcpy(static_cast<uint8_t *>(mapped) + kImageBytes * 2, dummyPixel.data(), dummyPixel.size());
+		vkUnmapMemory(m_device, imageStagingMemory);
+		const std::array<VkExtent3D, 3> extents{{ VkExtent3D{7, 7, 1}, VkExtent3D{7, 7, 1}, VkExtent3D{1, 1, 1} }};
+		for (uint32_t i = 0; i < 3; ++i)
+		{
+			VkImageCreateInfo imageInfo{}; imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO; imageInfo.imageType = VK_IMAGE_TYPE_2D; imageInfo.format = kFormat; imageInfo.extent = extents[i]; imageInfo.mipLevels = 1; imageInfo.arrayLayers = 1; imageInfo.samples = VK_SAMPLE_COUNT_1_BIT; imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL; imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT; imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE; imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+			if (vkCreateImage(m_device, &imageInfo, nullptr, &images[i]) != VK_SUCCESS) throw std::runtime_error("Failed to create single-source cost image.");
+			VkMemoryRequirements requirements{}; vkGetImageMemoryRequirements(m_device, images[i], &requirements);
+			const uint32_t type = findMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+			if (type == UINT32_MAX) throw std::runtime_error("No device-local memory for single-source cost image.");
+			VkMemoryAllocateInfo allocation{}; allocation.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO; allocation.allocationSize = requirements.size; allocation.memoryTypeIndex = type;
+			if (vkAllocateMemory(m_device, &allocation, nullptr, &imageMemories[i]) != VK_SUCCESS || vkBindImageMemory(m_device, images[i], imageMemories[i], 0) != VK_SUCCESS) throw std::runtime_error("Failed to allocate or bind single-source cost image memory.");
+			VkImageViewCreateInfo view{}; view.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO; view.image = images[i]; view.viewType = VK_IMAGE_VIEW_TYPE_2D; view.format = kFormat; view.subresourceRange = VkImageSubresourceRange{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+			if (vkCreateImageView(m_device, &view, nullptr, &imageViews[i]) != VK_SUCCESS) throw std::runtime_error("Failed to create single-source cost image view.");
+		}
+		VkSamplerCreateInfo samplerInfo{}; samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO; samplerInfo.magFilter = VK_FILTER_NEAREST; samplerInfo.minFilter = VK_FILTER_NEAREST; samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST; samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE; samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE; samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE; samplerInfo.anisotropyEnable = VK_FALSE; samplerInfo.compareEnable = VK_FALSE; samplerInfo.minLod = 0.0f; samplerInfo.maxLod = 0.0f; samplerInfo.unnormalizedCoordinates = VK_FALSE;
+		if (vkCreateSampler(m_device, &samplerInfo, nullptr, &sampler) != VK_SUCCESS) throw std::runtime_error("Failed to create single-source cost sampler.");
+
+		const VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+		for (uint32_t i = 0; i < 4; ++i)
+		{
+			createBuffer(inputSizes[i], VK_BUFFER_USAGE_TRANSFER_SRC_BIT, host, inputStaging[i], inputStagingMemories[i]);
+			if (vkMapMemory(m_device, inputStagingMemories[i], 0, inputSizes[i], 0, &mapped) != VK_SUCCESS) throw std::runtime_error("Failed to map single-source case staging memory.");
+			std::memcpy(mapped, inputData[i], static_cast<size_t>(inputSizes[i])); vkUnmapMemory(m_device, inputStagingMemories[i]);
+			createBuffer(inputSizes[i], VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, inputBuffers[i], inputMemories[i]);
+		}
+		const std::array<VkDeviceSize, 4> outputSizes{{ kOutputUintBytes, kOutputFloatBytes, kOutputUintBytes, kOutputUintBytes }};
+		for (uint32_t i = 0; i < 4; ++i)
+		{
+			createBuffer(outputSizes[i], VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, outputBuffers[i], outputMemories[i]);
+			createBuffer(outputSizes[i], VK_BUFFER_USAGE_TRANSFER_DST_BIT, host, readbackBuffers[i], readbackMemories[i]);
+		}
+
+		std::array<VkDescriptorSetLayoutBinding, 12> bindings{};
+		for (uint32_t i = 0; i < bindings.size(); ++i) { bindings[i].binding = i; bindings[i].descriptorType = i < 4 ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; bindings[i].descriptorCount = (i == 2 || i == 3) ? 8 : 1; bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT; }
+		VkDescriptorSetLayoutCreateInfo layoutInfo{}; layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO; layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size()); layoutInfo.pBindings = bindings.data();
+		if (vkCreateDescriptorSetLayout(m_device, &layoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS) throw std::runtime_error("Failed to create single-source cost descriptor layout.");
+		std::array<VkDescriptorPoolSize, 2> poolSizes{{ { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 18 }, { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8 } }};
+		VkDescriptorPoolCreateInfo poolInfo{}; poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO; poolInfo.maxSets = 1; poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size()); poolInfo.pPoolSizes = poolSizes.data();
+		if (vkCreateDescriptorPool(m_device, &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS) throw std::runtime_error("Failed to create single-source cost descriptor pool.");
+		VkDescriptorSetAllocateInfo setAllocate{}; setAllocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO; setAllocate.descriptorPool = descriptorPool; setAllocate.descriptorSetCount = 1; setAllocate.pSetLayouts = &descriptorSetLayout;
+		if (vkAllocateDescriptorSets(m_device, &setAllocate, &descriptorSet) != VK_SUCCESS) throw std::runtime_error("Failed to allocate single-source cost descriptor set.");
+		std::array<VkDescriptorImageInfo, 1> referenceImageInfo{{ { sampler, imageViews[0], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }};
+		std::array<VkDescriptorImageInfo, 1> referenceMaskInfo{{ { sampler, imageViews[2], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } }};
+		std::array<VkDescriptorImageInfo, 8> sourceImageInfos{}, sourceMaskInfos{};
+		for (uint32_t i = 0; i < 8; ++i)
+		{
+			sourceImageInfos[i] = VkDescriptorImageInfo{ sampler, i == 0 ? imageViews[1] : imageViews[2], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+			sourceMaskInfos[i] = VkDescriptorImageInfo{ sampler, imageViews[2], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+		}
+		std::array<VkDescriptorBufferInfo, 8> bufferInfos{};
+		for (uint32_t i = 0; i < 4; ++i) bufferInfos[i] = VkDescriptorBufferInfo{ inputBuffers[i], 0, inputSizes[i] };
+		for (uint32_t i = 0; i < 4; ++i) bufferInfos[4 + i] = VkDescriptorBufferInfo{ outputBuffers[i], 0, outputSizes[i] };
+		std::array<VkWriteDescriptorSet, 12> writes{};
+		for (uint32_t i = 0; i < 12; ++i) { writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; writes[i].dstSet = descriptorSet; writes[i].dstBinding = i; writes[i].descriptorType = i < 4 ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; }
+		writes[0].descriptorCount = 1; writes[0].pImageInfo = referenceImageInfo.data();
+		writes[1].descriptorCount = 1; writes[1].pImageInfo = referenceMaskInfo.data();
+		writes[2].descriptorCount = 8; writes[2].pImageInfo = sourceImageInfos.data();
+		writes[3].descriptorCount = 8; writes[3].pImageInfo = sourceMaskInfos.data();
+		for (uint32_t i = 0; i < 8; ++i) { writes[4 + i].descriptorCount = 1; writes[4 + i].pBufferInfo = &bufferInfos[i]; }
+		vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+
+		const std::vector<char> shaderCode = ReadShaderFile("shaders/planeSweepSingleSourceCostSmokeTest.comp.spv");
+		if (shaderCode.empty()) throw std::runtime_error("Failed to load single-source cost smoke-test SPIR-V.");
+		VkShaderModuleCreateInfo shaderInfo{}; shaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO; shaderInfo.codeSize = shaderCode.size(); shaderInfo.pCode = reinterpret_cast<const uint32_t *>(shaderCode.data());
+		if (vkCreateShaderModule(m_device, &shaderInfo, nullptr, &shaderModule) != VK_SUCCESS) throw std::runtime_error("Failed to create single-source cost shader module.");
+		VkPipelineLayoutCreateInfo pipelineLayoutInfo{}; pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO; pipelineLayoutInfo.setLayoutCount = 1; pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout;
+		if (vkCreatePipelineLayout(m_device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) throw std::runtime_error("Failed to create single-source cost pipeline layout.");
+		VkPipelineShaderStageCreateInfo stage{}; stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO; stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; stage.module = shaderModule; stage.pName = "main";
+		VkComputePipelineCreateInfo pipelineInfo{}; pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO; pipelineInfo.stage = stage; pipelineInfo.layout = pipelineLayout;
+		if (vkCreateComputePipelines(m_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline) != VK_SUCCESS) throw std::runtime_error("Failed to create single-source cost compute pipeline.");
+
+		VkCommandBufferAllocateInfo commandAllocate{}; commandAllocate.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO; commandAllocate.commandPool = m_commandPool; commandAllocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; commandAllocate.commandBufferCount = 1;
+		if (vkAllocateCommandBuffers(m_device, &commandAllocate, &commandBuffer) != VK_SUCCESS) throw std::runtime_error("Failed to allocate single-source cost command buffer.");
+		VkCommandBufferBeginInfo commandBegin{}; commandBegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO; commandBegin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+		if (vkBeginCommandBuffer(commandBuffer, &commandBegin) != VK_SUCCESS) throw std::runtime_error("Failed to begin single-source cost command buffer.");
+		std::array<VkImageMemoryBarrier, 3> toTransfer{};
+		for (uint32_t i = 0; i < 3; ++i) { toTransfer[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER; toTransfer[i].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; toTransfer[i].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; toTransfer[i].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; toTransfer[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; toTransfer[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; toTransfer[i].image = images[i]; toTransfer[i].subresourceRange = VkImageSubresourceRange{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }; }
+		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 3, toTransfer.data());
+		for (uint32_t i = 0; i < 3; ++i)
+		{
+			VkBufferImageCopy copy{}; copy.bufferOffset = i == 0 ? 0 : (i == 1 ? kImageBytes : kImageBytes * 2); copy.imageSubresource = VkImageSubresourceLayers{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }; copy.imageExtent = extents[i];
+			vkCmdCopyBufferToImage(commandBuffer, imageStaging, images[i], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+		}
+		std::array<VkImageMemoryBarrier, 3> toShaderRead{};
+		for (uint32_t i = 0; i < 3; ++i) { toShaderRead[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER; toShaderRead[i].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; toShaderRead[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT; toShaderRead[i].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; toShaderRead[i].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; toShaderRead[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; toShaderRead[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; toShaderRead[i].image = images[i]; toShaderRead[i].subresourceRange = VkImageSubresourceRange{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }; }
+		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 3, toShaderRead.data());
+		for (uint32_t i = 0; i < 4; ++i) { VkBufferCopy copy{}; copy.size = inputSizes[i]; vkCmdCopyBuffer(commandBuffer, inputStaging[i], inputBuffers[i], 1, &copy); }
+		std::array<VkBufferMemoryBarrier, 4> inputBarriers{};
+		for (uint32_t i = 0; i < 4; ++i) { inputBarriers[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER; inputBarriers[i].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; inputBarriers[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT; inputBarriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; inputBarriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; inputBarriers[i].buffer = inputBuffers[i]; inputBarriers[i].size = inputSizes[i]; }
+		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 4, inputBarriers.data(), 0, nullptr);
+		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+		vkCmdDispatch(commandBuffer, 1, 1, 1);
+		std::array<VkBufferMemoryBarrier, 4> outputBarriers{};
+		for (uint32_t i = 0; i < 4; ++i) { outputBarriers[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER; outputBarriers[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT; outputBarriers[i].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT; outputBarriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; outputBarriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; outputBarriers[i].buffer = outputBuffers[i]; outputBarriers[i].size = outputSizes[i]; }
+		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 4, outputBarriers.data(), 0, nullptr);
+		for (uint32_t i = 0; i < 4; ++i) { VkBufferCopy copy{}; copy.size = outputSizes[i]; vkCmdCopyBuffer(commandBuffer, outputBuffers[i], readbackBuffers[i], 1, &copy); }
+		std::array<VkBufferMemoryBarrier, 4> hostBarriers{};
+		for (uint32_t i = 0; i < 4; ++i) { hostBarriers[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER; hostBarriers[i].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; hostBarriers[i].dstAccessMask = VK_ACCESS_HOST_READ_BIT; hostBarriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; hostBarriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; hostBarriers[i].buffer = readbackBuffers[i]; hostBarriers[i].size = outputSizes[i]; }
+		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 4, hostBarriers.data(), 0, nullptr);
+		if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) throw std::runtime_error("Failed to end single-source cost command buffer.");
+		VkFenceCreateInfo fenceInfo{}; fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+		if (vkCreateFence(m_device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) throw std::runtime_error("Failed to create single-source cost fence.");
+		VkSubmitInfo submit{}; submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO; submit.commandBufferCount = 1; submit.pCommandBuffers = &commandBuffer;
+		if (vkQueueSubmit(m_queue, 1, &submit, fence) != VK_SUCCESS) throw std::runtime_error("Failed to submit single-source cost command buffer.");
+		submitted = true;
+		if (vkWaitForFences(m_device, 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) throw std::runtime_error("Failed to wait for single-source cost fence.");
+		submitted = false;
+		vkDestroyFence(m_device, fence, nullptr); fence = VK_NULL_HANDLE;
+		std::array<uint32_t, kCaseCount> gpuValidity{}, gpuSampleCounts{}, gpuMinimumSamples{};
+		std::array<float, kCaseCount> gpuCosts{};
+		const std::array<void *, 4> readbackData{{ gpuValidity.data(), gpuCosts.data(), gpuSampleCounts.data(), gpuMinimumSamples.data() }};
+		for (uint32_t i = 0; i < 4; ++i)
+		{
+			if (vkMapMemory(m_device, readbackMemories[i], 0, outputSizes[i], 0, &mapped) != VK_SUCCESS) throw std::runtime_error("Failed to map single-source cost readback.");
+			std::memcpy(readbackData[i], mapped, static_cast<size_t>(outputSizes[i])); vkUnmapMemory(m_device, readbackMemories[i]);
+		}
+		for (uint32_t i = 0; i < kCaseCount; ++i)
+		{
+			if (gpuSampleCounts[i] != expectedSampleCounts[i] || gpuMinimumSamples[i] != expectedMinimumSamples[i])
+			{
+				UIUtility::Print("Single-source cost sample-count diagnostic mismatch: case=" + std::to_string(i) + ", expected accepted=" + std::to_string(expectedSampleCounts[i]) + ", GPU accepted=" + std::to_string(gpuSampleCounts[i]) + ", expected minimum=" + std::to_string(expectedMinimumSamples[i]) + ", GPU minimum=" + std::to_string(gpuMinimumSamples[i]) + ".\n");
+				cleanup(); return false;
+			}
+			if ((gpuValidity[i] != 0) != (expectedValidity[i] != 0))
+			{
+				UIUtility::Print("Single-source cost validity mismatch: case=" + std::to_string(i) + ", x=" + std::to_string(caseValues[i * 8]) + ", y=" + std::to_string(caseValues[i * 8 + 1]) + ", depth=" + std::to_string(caseValues[i * 8 + 2]) + ", patchRadius=" + std::to_string(patchRadii[i]) + ", alphaThreshold=" + std::to_string(caseValues[i * 8 + 3]) + ", minimumOpaquePatchRatio=" + std::to_string(caseValues[i * 8 + 4]) + ", GPU acceptedSampleCount=" + std::to_string(gpuSampleCounts[i]) + ", GPU minimumOpaqueSamples=" + std::to_string(gpuMinimumSamples[i]) + ", CPU validity=" + std::to_string(expectedValidity[i]) + ", GPU validity=" + std::to_string(gpuValidity[i]) + ".\n");
+				cleanup(); return false;
+			}
+		}
+		float maximumCostError = 0.0f;
+		for (uint32_t i = 0; i < kCaseCount; ++i)
+		{
+			if (expectedValidity[i] != 0)
+			{
+				const float error = std::fabs(gpuCosts[i] - expectedCosts[i]);
+				maximumCostError = std::max(maximumCostError, error);
+				if (error > 1e-6f)
+				{
+					UIUtility::Print("Single-source cost mismatch: case=" + std::to_string(i) + ", CPU cost=" + std::to_string(expectedCosts[i]) + ", GPU cost=" + std::to_string(gpuCosts[i]) + ", absolute error=" + std::to_string(error) + ".\n");
+					cleanup(); return false;
+				}
+			}
+		}
+		const uint32_t cpuValidCount = static_cast<uint32_t>(std::count(expectedValidity.begin(), expectedValidity.end(), 1u));
+		UIUtility::Print("PlaneSweep GPU single-source patch-cost smoke test succeeded:\n8 / 8 validity results matched CPU ComputePlaneCost.\n" + std::to_string(cpuValidCount) + " / " + std::to_string(cpuValidCount) + " valid costs matched.\nMaximum cost absolute error: " + std::to_string(maximumCostError) + "\n");
+		for (uint32_t i = 0; i < kCaseCount; ++i) UIUtility::Print("case " + std::to_string(i) + ": " + std::to_string(gpuSampleCounts[i]) + "\n");
+		UIUtility::Print("Theoretical controlled per-sample cost: " + std::to_string(18.0f / (255.0f * 3.0f)) + "\n");
+		cleanup();
+		return true;
+	}
+	catch (const std::exception &ex)
+	{
+		cleanup();
+		UIUtility::Print(std::string("PlaneSweep GPU single-source patch-cost smoke test failed: ") + ex.what() + "\n");
 		return false;
 	}
 }

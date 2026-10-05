@@ -4,6 +4,7 @@
 #include <vector>
 #include <string>
 #include <cstdint>
+#include <array>
 
 namespace graphicsFX
 {
@@ -40,6 +41,18 @@ namespace graphicsFX
 			const std::vector<float> &worldPoints,
 			const std::vector<uint32_t> &expectedValidity,
 			const std::vector<float> &expectedProjections
+		);
+		bool RunSingleSourceCostSmokeTest(
+			const std::vector<uint8_t> &referencePixels,
+			const std::vector<uint8_t> &sourcePixels,
+			const std::vector<GpuCameraIntrinsics> &intrinsics,
+			const std::vector<GpuCameraPose> &poses,
+			const std::vector<float> &caseValues,
+			const std::vector<uint32_t> &patchRadii,
+			const std::vector<uint32_t> &expectedSampleCounts,
+			const std::vector<uint32_t> &expectedMinimumSamples,
+			const std::vector<uint32_t> &expectedValidity,
+			const std::vector<float> &expectedCosts
 		);
 		bool RunRealImageSamplingSmokeTest(
 			const TextureData &texture,

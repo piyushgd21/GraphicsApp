@@ -3316,81 +3316,122 @@ namespace graphicsFX
         //Builds COLMAP points from plane sweep reconstruction.
         ColmapPlaneSweepResult MultiViewUtility::BuildColmapPlaneSweepPointCloud(const ColmapCameraReadResult &colmapData, const ColmapSetup &setup, PlaneSweepExperimentMetrics *metricsPtr, PlaneSweepGpu *planeSweepGpuPtr)
         {
+            ColmapPlaneSweepResult result;
             if (planeSweepGpuPtr != nullptr)
             {
                 UIUtility::Print("BuildColmapPlaneSweepPointCloud received PlaneSweepGpu handoff.\n");
             }
-            static bool projectPointTestAttempted = false;
-            if (planeSweepGpuPtr != nullptr && !projectPointTestAttempted)
+            static bool singleSourceCostTestAttempted = false;
+            if (planeSweepGpuPtr != nullptr && !singleSourceCostTestAttempted)
             {
-                projectPointTestAttempted = true;
-                std::vector<ColmapCameraData> cameras(3);
-                std::vector<ColmapCameraIntrinsicData> intrinsics(3);
-                cameras[0].m_position = Float3{ 1.25f, -2.5f, 3.75f };
-                cameras[0].m_forward = Float3{ 0.0f, 0.0f, 1.0f };
-                cameras[0].m_up = Float3{ 0.0f, 1.0f, 0.0f };
-                cameras[0].m_right = Float3{ 1.0f, 0.0f, 0.0f };
-                intrinsics[0].m_width = 640; intrinsics[0].m_height = 480; intrinsics[0].m_fx = 500.0; intrinsics[0].m_fy = 510.0;
-                intrinsics[0].m_cx = 319.5; intrinsics[0].m_cy = 239.5; intrinsics[0].m_k1 = 0.010; intrinsics[0].m_k2 = -0.002;
-                intrinsics[0].m_p1 = 0.0010; intrinsics[0].m_p2 = -0.0007;
-
-                cameras[1].m_position = Float3{ -4.0f, 1.5f, 8.0f };
-                cameras[1].m_forward = Float3{ 1.0f, 0.0f, 0.0f };
-                cameras[1].m_up = Float3{ 0.0f, 1.0f, 0.0f };
-                cameras[1].m_right = Float3{ 0.0f, 0.0f, -1.0f };
-                intrinsics[1].m_width = 1280; intrinsics[1].m_height = 720; intrinsics[1].m_fx = 900.0; intrinsics[1].m_fy = 880.0;
-                intrinsics[1].m_cx = 640.25; intrinsics[1].m_cy = 360.75; intrinsics[1].m_k1 = -0.015; intrinsics[1].m_k2 = 0.003;
-                intrinsics[1].m_p1 = -0.0020; intrinsics[1].m_p2 = 0.0015;
-
-                cameras[2].m_position = Float3{ 10.0f, -3.0f, -6.0f };
-                cameras[2].m_forward = Float3{ 0.5f, 0.0f, 0.8660254f };
-                cameras[2].m_up = Float3{ 0.0f, 1.0f, 0.0f };
-                cameras[2].m_right = Float3{ 0.8660254f, 0.0f, -0.5f };
-                intrinsics[2].m_width = 1920; intrinsics[2].m_height = 1080; intrinsics[2].m_fx = 1100.0; intrinsics[2].m_fy = 1085.0;
-                intrinsics[2].m_cx = 959.25; intrinsics[2].m_cy = 539.75; intrinsics[2].m_k1 = 0.025; intrinsics[2].m_k2 = -0.006;
-                intrinsics[2].m_p1 = 0.0018; intrinsics[2].m_p2 = -0.0012;
-
-                const std::array<std::array<float, 4>, 16> cases{{
-                    {{0, 0.0f, 0.0f, 1.0f}}, {{0, -0.35f, -0.25f, 2.0f}}, {{0, 0.45f, 0.30f, 10.0f}}, {{0, 1.20f, -0.80f, 3.0f}}, {{0, 0.10f, 0.20f, 0.00005f}},
-                    {{1, 0.0f, 0.0f, 1.0f}}, {{1, -0.50f, 0.35f, 4.0f}}, {{1, 0.60f, -0.40f, 12.0f}}, {{1, 1.10f, 0.90f, 2.5f}}, {{1, 0.0f, 0.0f, -1.0f}},
-                    {{2, 0.0f, 0.0f, 1.0f}}, {{2, -0.40f, -0.30f, 5.0f}}, {{2, 0.50f, 0.45f, 20.0f}}, {{2, -0.95f, 0.65f, 2.25f}}, {{2, 0.85f, -0.70f, 40.0f}}, {{2, 0.25f, 0.15f, 0.0f}}
-                }};
-                std::vector<uint32_t> caseCameraIndices(16);
-                std::vector<float> worldPoints(16 * 4, 0.0f);
-                std::vector<uint32_t> expectedValidity(16, 0);
-                std::vector<float> expectedProjections(16 * 3, 0.0f);
-                for (uint32_t i = 0; i < 16; ++i)
+                singleSourceCostTestAttempted = true;
+                using PlaneSweepImage = MultiViewPlaneSweepUtility::PlaneSweepImage;
+                PlaneSweepImage referenceImage;
+                PlaneSweepImage sourceImage;
+                referenceImage.m_camera.m_position = Float3{ 0.0f, 0.0f, 0.0f };
+                referenceImage.m_camera.m_forward = Float3{ 0.0f, 0.0f, 1.0f };
+                referenceImage.m_camera.m_up = Float3{ 0.0f, 1.0f, 0.0f };
+                referenceImage.m_camera.m_right = Float3{ 1.0f, 0.0f, 0.0f };
+                sourceImage.m_camera = referenceImage.m_camera;
+                referenceImage.m_intrinsic.m_width = 7; referenceImage.m_intrinsic.m_height = 7;
+                referenceImage.m_intrinsic.m_fx = 100.0; referenceImage.m_intrinsic.m_fy = 100.0;
+                referenceImage.m_intrinsic.m_cx = 3.5; referenceImage.m_intrinsic.m_cy = 3.5;
+                sourceImage.m_intrinsic = referenceImage.m_intrinsic;
+                sourceImage.m_intrinsic.m_cx = 3.0; sourceImage.m_intrinsic.m_cy = 3.0;
+                referenceImage.m_texture.m_width = sourceImage.m_texture.m_width = 7;
+                referenceImage.m_texture.m_height = sourceImage.m_texture.m_height = 7;
+                referenceImage.m_texture.m_channelCount = sourceImage.m_texture.m_channelCount = 4;
+                referenceImage.m_texture.m_pixels.resize(7 * 7 * 4);
+                sourceImage.m_texture.m_pixels.resize(7 * 7 * 4);
+                for (uint32_t py = 0; py < 7; ++py)
                 {
-                    const uint32_t cameraIndex = static_cast<uint32_t>(cases[i][0]);
-                    const float localX = cases[i][1];
-                    const float localY = cases[i][2];
-                    const float cameraDepth = cases[i][3];
-                    caseCameraIndices[i] = cameraIndex;
-                    const ColmapCameraData &camera = cameras[cameraIndex];
-                    const Float3 point = camera.m_position + (camera.m_right * (localX * cameraDepth)) -
-                        (camera.m_up * (localY * cameraDepth)) + (camera.m_forward * cameraDepth);
-                    worldPoints[i * 4] = point.x; worldPoints[i * 4 + 1] = point.y; worldPoints[i * 4 + 2] = point.z;
-                    float cpuX = 0.0f, cpuY = 0.0f, cpuDepth = 0.0f;
-                    const bool valid = MultiViewPlaneSweepUtility::ProjectPoint(camera, intrinsics[cameraIndex], point, cpuX, cpuY, cpuDepth);
-                    expectedValidity[i] = valid ? 1u : 0u;
-                    expectedProjections[i * 3 + 2] = cpuDepth;
-                    if (valid)
+                    for (uint32_t px = 0; px < 7; ++px)
                     {
-                        expectedProjections[i * 3] = cpuX;
-                        expectedProjections[i * 3 + 1] = cpuY;
+                        const size_t pixelOffset = (static_cast<size_t>(py) * 7 + px) * 4;
+                        const uint8_t red = static_cast<uint8_t>(20 + 10 * px);
+                        const uint8_t green = static_cast<uint8_t>(30 + 8 * py);
+                        const uint8_t blue = static_cast<uint8_t>(40 + 3 * px + 4 * py);
+                        referenceImage.m_texture.m_pixels[pixelOffset] = red;
+                        referenceImage.m_texture.m_pixels[pixelOffset + 1] = green;
+                        referenceImage.m_texture.m_pixels[pixelOffset + 2] = blue;
+                        referenceImage.m_texture.m_pixels[pixelOffset + 3] = 255;
+                        sourceImage.m_texture.m_pixels[pixelOffset] = static_cast<uint8_t>(red + 9);
+                        sourceImage.m_texture.m_pixels[pixelOffset + 1] = static_cast<uint8_t>(green + 6);
+                        sourceImage.m_texture.m_pixels[pixelOffset + 2] = static_cast<uint8_t>(blue + 3);
+                        const bool lowAlpha = (px == 2 || px == 4) && (py == 2 || py == 4);
+                        sourceImage.m_texture.m_pixels[pixelOffset + 3] = lowAlpha ? 64 : 255;
                     }
                 }
-                planeSweepGpuPtr->RunProjectPointSmokeTest(
-                    MakeGpuCameraIntrinsicsArray(intrinsics),
-                    MakeGpuCameraPoseArray(cameras),
-                    caseCameraIndices,
-                    worldPoints,
+
+                const std::array<std::array<float, 2>, 4> projectionSamples{{ {{0.0f, 0.0f}}, {{3.0f, 3.0f}}, {{6.0f, 6.0f}}, {{2.0f, 4.0f}} }};
+                bool projectionAssumptionValid = true;
+                for (const auto &sample : projectionSamples)
+                {
+                    const Float3 point = MultiViewPlaneSweepUtility::UnprojectPixel(referenceImage.m_camera, referenceImage.m_intrinsic, sample[0], sample[1], 2.0f);
+                    float projectedX = 0.0f, projectedY = 0.0f, projectedDepth = 0.0f;
+                    if (!MultiViewPlaneSweepUtility::ProjectPoint(sourceImage.m_camera, sourceImage.m_intrinsic, point, projectedX, projectedY, projectedDepth) ||
+                        std::fabs(projectedX - sample[0]) > 1e-5f || std::fabs(projectedY - sample[1]) > 1e-5f)
+                    {
+                        UIUtility::Print("Phase 2L controlled projection assumption failed: reference=(" + std::to_string(sample[0]) + "," + std::to_string(sample[1]) + "), source=(" + std::to_string(projectedX) + "," + std::to_string(projectedY) + "), depth=" + std::to_string(projectedDepth) + ". GPU test skipped.\n");
+                        projectionAssumptionValid = false;
+                    }
+                }
+                if (!projectionAssumptionValid) return result;
+
+                struct CostCase { float x; float y; float depth; int patchRadius; float alphaThreshold; float minimumOpaquePatchRatio; bool expectedConceptualValidity; uint32_t expectedSamples; };
+                const std::array<CostCase, 8> cases{{
+                    {3.0f, 3.0f, 2.0f, 0, 0.5f, 1.0f, true, 1},
+                    {3.0f, 3.0f, 2.0f, 1, 0.5f, 0.5f, true, 5},
+                    {3.0f, 3.0f, 2.0f, 1, 0.5f, 0.6f, false, 5},
+                    {0.0f, 0.0f, 2.0f, 1, 0.5f, 0.4f, true, 4},
+                    {0.0f, 0.0f, 2.0f, 1, 0.5f, 0.5f, false, 4},
+                    {3.0f, 3.0f, 2.0f, 0, 1.0f, 1.0f, false, 0},
+                    {3.0f, 3.0f, 2.0f, 1, 0.2f, 1.0f, true, 9},
+                    {3.0f, 3.0f, -1.0f, 0, 0.5f, 1.0f, false, 0}
+                }};
+                std::vector<PlaneSweepImage> sourceImages{ sourceImage };
+                std::vector<float> caseValues(8 * 8, 0.0f);
+                std::vector<uint32_t> patchRadii(8);
+                std::vector<uint32_t> expectedSampleCounts(8);
+                std::vector<uint32_t> expectedMinimumSamples(8);
+                std::vector<uint32_t> expectedValidity(8);
+                std::vector<float> expectedCosts(8, 0.0f);
+                bool cpuExpectationsMatch = true;
+                for (uint32_t i = 0; i < cases.size(); ++i)
+                {
+                    const CostCase &testCase = cases[i];
+                    const size_t offset = static_cast<size_t>(i) * 8;
+                    caseValues[offset] = testCase.x; caseValues[offset + 1] = testCase.y; caseValues[offset + 2] = testCase.depth;
+                    caseValues[offset + 3] = testCase.alphaThreshold; caseValues[offset + 4] = testCase.minimumOpaquePatchRatio;
+                    patchRadii[i] = static_cast<uint32_t>(testCase.patchRadius);
+                    expectedSampleCounts[i] = testCase.expectedSamples;
+                    expectedMinimumSamples[i] = static_cast<uint32_t>(std::max(1, static_cast<int>(std::ceil(static_cast<float>((testCase.patchRadius * 2 + 1) * (testCase.patchRadius * 2 + 1)) * testCase.minimumOpaquePatchRatio))));
+                    float cpuCost = 0.0f;
+                    const bool cpuValid = MultiViewPlaneSweepUtility::ComputePlaneCost(referenceImage, sourceImages, testCase.x, testCase.y, testCase.depth, testCase.patchRadius, 1, testCase.alphaThreshold, testCase.minimumOpaquePatchRatio, cpuCost);
+                    expectedValidity[i] = cpuValid ? 1u : 0u;
+                    expectedCosts[i] = cpuCost;
+                    UIUtility::Print("Phase 2L CPU case " + std::to_string(i) + ": valid=" + (cpuValid ? "true" : "false") + ", cost=" + std::to_string(cpuCost) + "\n");
+                    if (cpuValid != testCase.expectedConceptualValidity)
+                    {
+                        UIUtility::Print("Phase 2L CPU expectation mismatch: case=" + std::to_string(i) + ", conceptual=" + (testCase.expectedConceptualValidity ? "true" : "false") + ", actual CPU=" + (cpuValid ? "true" : "false") + ", CPU cost=" + std::to_string(cpuCost) + ". GPU test skipped.\n");
+                        cpuExpectationsMatch = false;
+                    }
+                }
+                if (!cpuExpectationsMatch) return result;
+                planeSweepGpuPtr->RunSingleSourceCostSmokeTest(
+                    referenceImage.m_texture.m_pixels,
+                    sourceImage.m_texture.m_pixels,
+                    MakeGpuCameraIntrinsicsArray(std::vector<ColmapCameraIntrinsicData>{ referenceImage.m_intrinsic, sourceImage.m_intrinsic }),
+                    MakeGpuCameraPoseArray(std::vector<ColmapCameraData>{ referenceImage.m_camera, sourceImage.m_camera }),
+                    caseValues,
+                    patchRadii,
+                    expectedSampleCounts,
+                    expectedMinimumSamples,
                     expectedValidity,
-                    expectedProjections
+                    expectedCosts
                 );
             }
             //Returns an empty result when plane sweep input is unavailable or disabled.
-            ColmapPlaneSweepResult result;
             if (!MultiViewPlaneSweepUtility::PlaneSweepReady(colmapData, setup))
             {
                 return result;
