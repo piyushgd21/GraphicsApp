@@ -3352,6 +3352,8 @@ namespace graphicsFX
             const std::size_t requiredSourceCount = std::min(requestedSourceCount, static_cast<std::size_t>(std::max(1, setup.m_planeSweepMinValidSourceViews)));
             std::vector<MultiViewPlaneSweepUtility::PlaneSweepDepthMap> depthMaps;
             std::vector<MultiViewPlaneSweepUtility::PlaneSweepPointCandidate> pointCandidates;
+            static bool realImageSamplingAttempted = false;
+            static bool smallRealImageNoticePrinted = false;
 
             //Processes each sampled camera as a plane-sweep reference view.
             for (std::size_t referenceCameraIndex = 0U; referenceCameraIndex < colmapData.m_cameras.size(); referenceCameraIndex += referenceStep)
@@ -3361,6 +3363,189 @@ namespace graphicsFX
                 {
                     ++result.m_camerasSkipped;
                     continue;
+                }
+
+                if (planeSweepGpuPtr != nullptr && !realImageSamplingAttempted &&
+                    (referenceImage.m_texture.m_width < 2 || referenceImage.m_texture.m_height < 2) && !smallRealImageNoticePrinted)
+                {
+                    UIUtility::Print("Phase 2H requires a real image of at least 2x2; skipping smaller loaded image candidate.\n");
+                    smallRealImageNoticePrinted = true;
+                }
+
+                if (planeSweepGpuPtr != nullptr && !realImageSamplingAttempted &&
+                    referenceImage.m_texture.m_width >= 2 && referenceImage.m_texture.m_height >= 2)
+                {
+                    const auto validateTexture = [&](const TextureData &texture, const char *role, VkDeviceSize &byteCount) -> bool
+                    {
+                        if (texture.m_width == 0 || texture.m_height == 0 || texture.m_channelCount != 4)
+                        {
+                            UIUtility::Print(std::string("Phase 2H malformed ") + role + " texture for camera/image index " + std::to_string(referenceImage.m_cameraIndex) + ": width=" + std::to_string(texture.m_width) + " height=" + std::to_string(texture.m_height) + " channelCount=" + std::to_string(texture.m_channelCount) + ".\n");
+                            return false;
+                        }
+                        const uint64_t width = texture.m_width;
+                        const uint64_t height = texture.m_height;
+                        const uint64_t maxSize = std::numeric_limits<VkDeviceSize>::max();
+                        if (width > maxSize / height || width * height > maxSize / 4 || width * height > std::numeric_limits<size_t>::max() / 4)
+                        {
+                            UIUtility::Print(std::string("Phase 2H byte-count overflow for ") + role + " texture at camera/image index " + std::to_string(referenceImage.m_cameraIndex) + ".\n");
+                            return false;
+                        }
+                        const uint64_t expectedBytes = width * height * 4;
+                        if (texture.m_pixels.size() != static_cast<size_t>(expectedBytes))
+                        {
+                            UIUtility::Print(std::string("Phase 2H malformed ") + role + " texture byte count for camera/image index " + std::to_string(referenceImage.m_cameraIndex) + ": expected=" + std::to_string(expectedBytes) + " actual=" + std::to_string(texture.m_pixels.size()) + ".\n");
+                            return false;
+                        }
+                        byteCount = static_cast<VkDeviceSize>(expectedBytes);
+                        return true;
+                    };
+
+                    VkDeviceSize imageByteCount = 0;
+                    VkDeviceSize maskByteCount = 0;
+                    if (!validateTexture(referenceImage.m_texture, "main", imageByteCount))
+                    {
+                        realImageSamplingAttempted = true;
+                    }
+                    else if (referenceImage.m_hasMask && !validateTexture(referenceImage.m_maskTexture, "mask", maskByteCount))
+                    {
+                        realImageSamplingAttempted = true;
+                    }
+                    else if (referenceImage.m_hasMask)
+                    {
+                        bool expectedMaskUsesAlpha = false;
+                        for (std::size_t alphaIndex = 3; alphaIndex < referenceImage.m_maskTexture.m_pixels.size(); alphaIndex += 4)
+                        {
+                            if (referenceImage.m_maskTexture.m_pixels[alphaIndex] < 255)
+                            {
+                                expectedMaskUsesAlpha = true;
+                                break;
+                            }
+                        }
+                        if (expectedMaskUsesAlpha != referenceImage.m_maskUsesAlpha)
+                        {
+                            UIUtility::Print(std::string("Phase 2H mask mode mismatch at camera/image index ") + std::to_string(referenceImage.m_cameraIndex) + ": expected m_maskUsesAlpha=" + (expectedMaskUsesAlpha ? "true" : "false") + " actual=" + (referenceImage.m_maskUsesAlpha ? "true" : "false") + ".\n");
+                            realImageSamplingAttempted = true;
+                        }
+                    }
+
+                    if (!realImageSamplingAttempted)
+                    {
+                        constexpr std::size_t sampleCount = 16;
+                        const float maxX = static_cast<float>(referenceImage.m_texture.m_width - 1);
+                        const float maxY = static_cast<float>(referenceImage.m_texture.m_height - 1);
+                        const std::array<float, sampleCount * 2> xyPairs{{
+                            0.0f, 0.0f, maxX, 0.0f, 0.0f, maxY, maxX, maxY,
+                            maxX * 0.5f, maxY * 0.5f, maxX * 0.25f, maxY * 0.25f,
+                            maxX * 0.75f, maxY * 0.25f, maxX * 0.25f, maxY * 0.75f,
+                            maxX * 0.75f, maxY * 0.75f, maxX * 0.123f, maxY * 0.456f,
+                            maxX * 0.987f, maxY * 0.111f, std::max(0.0f, maxX - 0.125f), maxY * 0.333f,
+                            maxX * 0.667f, std::max(0.0f, maxY - 0.125f), -0.001f, maxY * 0.5f,
+                            maxX * 0.5f, -0.001f, maxX + 0.001f, maxY * 0.5f
+                        }};
+                        std::array<uint32_t, sampleCount> cpuValidity{};
+                        std::array<float, sampleCount * 4> cpuRgba{};
+                        uint32_t validCount = 0;
+                        for (std::size_t sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex)
+                        {
+                            Float4 cpuColor{};
+                            const bool valid = MultiViewPlaneSweepUtility::SamplePlaneSweepPixel(referenceImage, xyPairs[sampleIndex * 2], xyPairs[sampleIndex * 2 + 1], cpuColor);
+                            cpuValidity[sampleIndex] = valid ? 1u : 0u;
+                            if (valid)
+                            {
+                                ++validCount;
+                                cpuRgba[sampleIndex * 4] = cpuColor.x;
+                                cpuRgba[sampleIndex * 4 + 1] = cpuColor.y;
+                                cpuRgba[sampleIndex * 4 + 2] = cpuColor.z;
+                                cpuRgba[sampleIndex * 4 + 3] = cpuColor.w;
+                            }
+                        }
+
+                        std::vector<uint32_t> gpuValidity;
+                        std::vector<float> gpuRgba;
+                        realImageSamplingAttempted = true;
+                        const bool uploaded = planeSweepGpuPtr->RunRealImageSamplingSmokeTest(
+                            referenceImage.m_texture,
+                            referenceImage.m_hasMask ? &referenceImage.m_maskTexture : nullptr,
+                            referenceImage.m_hasMask,
+                            referenceImage.m_maskUsesAlpha,
+                            std::vector<float>(xyPairs.begin(), xyPairs.end()),
+                            gpuValidity,
+                            gpuRgba,
+                            static_cast<uint32_t>(referenceImage.m_cameraIndex)
+                        );
+                        if (!uploaded)
+                        {
+                            UIUtility::Print("Phase 2H GPU image sampling failed before comparison.\n");
+                        }
+                        else
+                        {
+                            bool matched = true;
+                            for (std::size_t sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex)
+                            {
+                                if (cpuValidity[sampleIndex] != gpuValidity[sampleIndex])
+                                {
+                                    UIUtility::Print(std::string("Phase 2H validity mismatch: camera/image index ") + std::to_string(referenceImage.m_cameraIndex) + " sample=" + std::to_string(sampleIndex) + " x=" + std::to_string(xyPairs[sampleIndex * 2]) + " y=" + std::to_string(xyPairs[sampleIndex * 2 + 1]) + " image=" + std::to_string(referenceImage.m_texture.m_width) + "x" + std::to_string(referenceImage.m_texture.m_height) + " hasMask=" + (referenceImage.m_hasMask ? "true" : "false") + " maskUsesAlpha=" + (referenceImage.m_maskUsesAlpha ? "true" : "false") + " CPU valid=" + std::to_string(cpuValidity[sampleIndex]) + " GPU valid=" + std::to_string(gpuValidity[sampleIndex]) + ".\n");
+                                    matched = false;
+                                    break;
+                                }
+                            }
+
+                            float maximumError = 0.0f;
+                            if (matched)
+                            {
+                                constexpr const char *channels[] = { "R", "G", "B", "A" };
+                                for (std::size_t sampleIndex = 0; sampleIndex < sampleCount && matched; ++sampleIndex)
+                                {
+                                    if (cpuValidity[sampleIndex] == 0) continue;
+                                    for (std::size_t channel = 0; channel < 4; ++channel)
+                                    {
+                                        const float cpuValue = cpuRgba[sampleIndex * 4 + channel];
+                                        const float gpuValue = gpuRgba[sampleIndex * 4 + channel];
+                                        const float error = std::fabs(cpuValue - gpuValue);
+                                        maximumError = std::max(maximumError, error);
+                                        if (error > 1e-5f)
+                                        {
+                                            std::string diagnostic = std::string("Phase 2H color mismatch: camera/image index ") + std::to_string(referenceImage.m_cameraIndex) + " sample=" + std::to_string(sampleIndex) + " x=" + std::to_string(xyPairs[sampleIndex * 2]) + " y=" + std::to_string(xyPairs[sampleIndex * 2 + 1]) + " channel=" + channels[channel] + " CPU=" + std::to_string(cpuValue) + " GPU=" + std::to_string(gpuValue) + " absolute error=" + std::to_string(error);
+                                            if (referenceImage.m_hasMask)
+                                            {
+                                                const float imageSpanX = static_cast<float>(std::max(1U, referenceImage.m_texture.m_width - 1));
+                                                const float imageSpanY = static_cast<float>(std::max(1U, referenceImage.m_texture.m_height - 1));
+                                                const float maskSpanX = static_cast<float>(std::max(1U, referenceImage.m_maskTexture.m_width - 1));
+                                                const float maskSpanY = static_cast<float>(std::max(1U, referenceImage.m_maskTexture.m_height - 1));
+                                                const float maskX = (xyPairs[sampleIndex * 2] / imageSpanX) * maskSpanX;
+                                                const float maskY = (xyPairs[sampleIndex * 2 + 1] / imageSpanY) * maskSpanY;
+                                                diagnostic += " maskXY=(" + std::to_string(maskX) + "," + std::to_string(maskY) + ") maskUsesAlpha=" + (referenceImage.m_maskUsesAlpha ? "true" : "false");
+                                            }
+                                            UIUtility::Print(diagnostic + ".\n");
+                                            matched = false;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (matched)
+                            {
+                                UIUtility::Print("PlaneSweep GPU real-image sampling smoke test succeeded:\n");
+                                UIUtility::Print("camera/image index: " + std::to_string(referenceImage.m_cameraIndex) + "\n");
+                                UIUtility::Print("image size: " + std::to_string(referenceImage.m_texture.m_width) + " x " + std::to_string(referenceImage.m_texture.m_height) + "\n");
+                                UIUtility::Print("image bytes: " + std::to_string(imageByteCount) + "\n");
+                                if (referenceImage.m_hasMask)
+                                {
+                                    UIUtility::Print("real mask size: " + std::to_string(referenceImage.m_maskTexture.m_width) + " x " + std::to_string(referenceImage.m_maskTexture.m_height) + "\n");
+                                    UIUtility::Print("mask bytes: " + std::to_string(maskByteCount) + "\n");
+                                    UIUtility::Print(std::string("mask mode: ") + (referenceImage.m_maskUsesAlpha ? "alpha\n" : "luminance\n"));
+                                }
+                                else
+                                {
+                                    UIUtility::Print("real mask: none\n");
+                                }
+                                UIUtility::Print("16 / 16 validity results matched CPU SamplePlaneSweepPixel.\n");
+                                UIUtility::Print(std::to_string(validCount) + " / " + std::to_string(validCount) + " valid RGBA samples matched.\n");
+                                UIUtility::Print("Maximum valid RGBA component absolute error: " + std::to_string(maximumError) + "\n");
+                            }
+                        }
+                    }
                 }
 
                 //Selects the strongest source-camera candidates for the current reference view.

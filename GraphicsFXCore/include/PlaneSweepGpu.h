@@ -6,6 +6,8 @@
 
 namespace graphicsFX
 {
+	struct TextureData;
+
 	class PlaneSweepGpu
 	{
 	public:
@@ -20,6 +22,16 @@ namespace graphicsFX
 		bool RunImageSamplingSmokeTest(void);
 		bool RunBilinearSamplingSmokeTest(void);
 		bool RunPlaneSweepPixelSamplingSmokeTest(void);
+		bool RunRealImageSamplingSmokeTest(
+			const TextureData &texture,
+			const TextureData *maskTexturePtr,
+			bool hasMask,
+			bool maskUsesAlpha,
+			const std::vector<float> &xyPairs,
+			std::vector<uint32_t> &gpuValidity,
+			std::vector<float> &gpuRgba,
+			uint32_t cameraIndex
+		);
 		void Clean(void);
 
 	private:
