@@ -19,6 +19,7 @@ namespace graphicsFX
 		bool RunCameraConversionSmokeTest(void);
 		bool RunImageSamplingSmokeTest(void);
 		bool RunBilinearSamplingSmokeTest(void);
+		bool RunPlaneSweepPixelSamplingSmokeTest(void);
 		void Clean(void);
 
 	private:

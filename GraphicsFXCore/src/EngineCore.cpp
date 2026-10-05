@@ -339,11 +339,11 @@ namespace graphicsFX
 
                             try
                             {
-                                // Run only the newest bilinear-sampling smoke test at startup.
-                                const bool bilinearSamplingOk = smokeTest.RunBilinearSamplingSmokeTest();
-                                if (!bilinearSamplingOk)
+                                // Run only the newest SamplePlaneSweepPixel semantics test at startup.
+                                const bool pixelSamplingOk = smokeTest.RunPlaneSweepPixelSamplingSmokeTest();
+                                if (!pixelSamplingOk)
                                 {
-                                    UIUtility::Print("PlaneSweep GPU bilinear-sampling smoke test failed.\n");
+                                    UIUtility::Print("PlaneSweep GPU SamplePlaneSweepPixel smoke test failed.\n");
                                 }
                             }
                             catch (const std::exception &ex)
