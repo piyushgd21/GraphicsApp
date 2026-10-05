@@ -1895,4 +1895,455 @@ bool PlaneSweepGpu::RunImageSamplingSmokeTest(void)
 	}
 }
 
+bool PlaneSweepGpu::RunBilinearSamplingSmokeTest(void)
+{
+	if (!m_initialized)
+	{
+		throw std::runtime_error("PlaneSweepGpu not initialized.");
+	}
+
+	constexpr uint32_t kWidth = 4;
+	constexpr uint32_t kHeight = 4;
+	constexpr uint32_t kSampleCount = 16;
+	constexpr VkDeviceSize kImageBytes = kWidth * kHeight * 4;
+	constexpr VkDeviceSize kCoordinateBytes = kSampleCount * 2 * sizeof(float);
+	constexpr VkDeviceSize kColorBytes = kSampleCount * 4 * sizeof(float);
+	constexpr VkDeviceSize kValidityBytes = kSampleCount * sizeof(uint32_t);
+	constexpr VkFormat kFormat = VK_FORMAT_R8G8B8A8_UNORM;
+
+	struct PixelCoordinate { float x; float y; };
+	const std::array<PixelCoordinate, kSampleCount> coordinates{{
+		{ 0.0f, 0.0f }, { 3.0f, 3.0f }, { 1.0f, 2.0f }, { 1.5f, 1.5f },
+		{ 0.25f, 0.75f }, { 2.75f, 0.125f }, { 0.0f, 2.5f }, { 3.0f, 1.5f },
+		{ 1.25f, 3.0f }, { 2.999f, 2.001f }, { 0.001f, 0.001f }, { -0.001f, 1.0f },
+		{ 1.0f, -0.001f }, { 3.001f, 1.0f }, { 1.0f, 3.001f }, { 4.0f, 4.0f }
+	}};
+
+	VkFormatProperties formatProperties{};
+	vkGetPhysicalDeviceFormatProperties(m_physicalDevice, kFormat, &formatProperties);
+	const VkFormatFeatureFlags requiredFeatures = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+	if ((formatProperties.optimalTilingFeatures & requiredFeatures) != requiredFeatures)
+	{
+		UIUtility::Print("Bilinear sampling smoke test unsupported: VK_FORMAT_R8G8B8A8_UNORM optimal tiling lacks sampled-image or transfer-destination support.\n");
+		return false;
+	}
+
+	std::array<uint8_t, kImageBytes> pixels{};
+	for (uint32_t y = 0; y < kHeight; ++y)
+	{
+		for (uint32_t x = 0; x < kWidth; ++x)
+		{
+			const uint32_t index = y * kWidth + x;
+			pixels[index * 4 + 0] = static_cast<uint8_t>(10 + x * 50);
+			pixels[index * 4 + 1] = static_cast<uint8_t>(20 + y * 50);
+			pixels[index * 4 + 2] = static_cast<uint8_t>(30 + index * 7);
+			pixels[index * 4 + 3] = static_cast<uint8_t>(255 - index * 9);
+		}
+	}
+
+	std::array<float, kSampleCount * 2> coordinateFloats{};
+	for (uint32_t i = 0; i < kSampleCount; ++i)
+	{
+		coordinateFloats[i * 2] = coordinates[i].x;
+		coordinateFloats[i * 2 + 1] = coordinates[i].y;
+	}
+
+	VkBuffer imageStaging = VK_NULL_HANDLE, coordinateStaging = VK_NULL_HANDLE;
+	VkDeviceMemory imageStagingMemory = VK_NULL_HANDLE, coordinateStagingMemory = VK_NULL_HANDLE;
+	VkBuffer coordinateInput = VK_NULL_HANDLE, colorOutput = VK_NULL_HANDLE, validOutput = VK_NULL_HANDLE;
+	VkDeviceMemory coordinateInputMemory = VK_NULL_HANDLE, colorOutputMemory = VK_NULL_HANDLE, validOutputMemory = VK_NULL_HANDLE;
+	VkBuffer colorReadback = VK_NULL_HANDLE, validReadback = VK_NULL_HANDLE;
+	VkDeviceMemory colorReadbackMemory = VK_NULL_HANDLE, validReadbackMemory = VK_NULL_HANDLE;
+	VkImage image = VK_NULL_HANDLE;
+	VkDeviceMemory imageMemory = VK_NULL_HANDLE;
+	VkImageView imageView = VK_NULL_HANDLE;
+	VkSampler sampler = VK_NULL_HANDLE;
+	VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
+	VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+	VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+	VkShaderModule shaderModule = VK_NULL_HANDLE;
+	VkPipeline pipeline = VK_NULL_HANDLE;
+	VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+	VkFence fence = VK_NULL_HANDLE;
+	bool submitted = false;
+
+	auto cleanup = [&]()
+	{
+		if (submitted) { vkDeviceWaitIdle(m_device); submitted = false; }
+		if (fence != VK_NULL_HANDLE) { vkDestroyFence(m_device, fence, nullptr); fence = VK_NULL_HANDLE; }
+		if (commandBuffer != VK_NULL_HANDLE) { vkFreeCommandBuffers(m_device, m_commandPool, 1, &commandBuffer); commandBuffer = VK_NULL_HANDLE; }
+		if (pipeline != VK_NULL_HANDLE) { vkDestroyPipeline(m_device, pipeline, nullptr); pipeline = VK_NULL_HANDLE; }
+		if (shaderModule != VK_NULL_HANDLE) { vkDestroyShaderModule(m_device, shaderModule, nullptr); shaderModule = VK_NULL_HANDLE; }
+		if (pipelineLayout != VK_NULL_HANDLE) { vkDestroyPipelineLayout(m_device, pipelineLayout, nullptr); pipelineLayout = VK_NULL_HANDLE; }
+		if (descriptorPool != VK_NULL_HANDLE) { vkDestroyDescriptorPool(m_device, descriptorPool, nullptr); descriptorPool = VK_NULL_HANDLE; }
+		if (descriptorSetLayout != VK_NULL_HANDLE) { vkDestroyDescriptorSetLayout(m_device, descriptorSetLayout, nullptr); descriptorSetLayout = VK_NULL_HANDLE; }
+		if (sampler != VK_NULL_HANDLE) { vkDestroySampler(m_device, sampler, nullptr); sampler = VK_NULL_HANDLE; }
+		if (imageView != VK_NULL_HANDLE) { vkDestroyImageView(m_device, imageView, nullptr); imageView = VK_NULL_HANDLE; }
+		if (image != VK_NULL_HANDLE) { vkDestroyImage(m_device, image, nullptr); image = VK_NULL_HANDLE; }
+		if (imageMemory != VK_NULL_HANDLE) { vkFreeMemory(m_device, imageMemory, nullptr); imageMemory = VK_NULL_HANDLE; }
+		auto destroyBuffer = [&](VkBuffer &buffer, VkDeviceMemory &memory)
+		{
+			if (buffer != VK_NULL_HANDLE) { vkDestroyBuffer(m_device, buffer, nullptr); buffer = VK_NULL_HANDLE; }
+			if (memory != VK_NULL_HANDLE) { vkFreeMemory(m_device, memory, nullptr); memory = VK_NULL_HANDLE; }
+		};
+		destroyBuffer(colorReadback, colorReadbackMemory);
+		destroyBuffer(validReadback, validReadbackMemory);
+		destroyBuffer(imageStaging, imageStagingMemory);
+		destroyBuffer(coordinateStaging, coordinateStagingMemory);
+		destroyBuffer(coordinateInput, coordinateInputMemory);
+		destroyBuffer(colorOutput, colorOutputMemory);
+		destroyBuffer(validOutput, validOutputMemory);
+	};
+
+	auto findMemoryType = [&](uint32_t typeBits, VkMemoryPropertyFlags requiredFlags)
+	{
+		VkPhysicalDeviceMemoryProperties properties{};
+		vkGetPhysicalDeviceMemoryProperties(m_physicalDevice, &properties);
+		for (uint32_t i = 0; i < properties.memoryTypeCount; ++i)
+		{
+			if ((typeBits & (1u << i)) != 0 && (properties.memoryTypes[i].propertyFlags & requiredFlags) == requiredFlags) return i;
+		}
+		return UINT32_MAX;
+	};
+	auto createBuffer = [&](VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer &buffer, VkDeviceMemory &memory)
+	{
+		VkBufferCreateInfo info{};
+		info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+		info.size = size;
+		info.usage = usage;
+		info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		if (vkCreateBuffer(m_device, &info, nullptr, &buffer) != VK_SUCCESS) throw std::runtime_error("Failed to create bilinear test buffer.");
+		VkMemoryRequirements requirements{};
+		vkGetBufferMemoryRequirements(m_device, buffer, &requirements);
+		const uint32_t type = findMemoryType(requirements.memoryTypeBits, properties);
+		if (type == UINT32_MAX) throw std::runtime_error("No suitable memory type for bilinear test buffer.");
+		VkMemoryAllocateInfo allocation{};
+		allocation.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		allocation.allocationSize = requirements.size;
+		allocation.memoryTypeIndex = type;
+		if (vkAllocateMemory(m_device, &allocation, nullptr, &memory) != VK_SUCCESS) throw std::runtime_error("Failed to allocate bilinear test buffer memory.");
+		if (vkBindBufferMemory(m_device, buffer, memory, 0) != VK_SUCCESS) throw std::runtime_error("Failed to bind bilinear test buffer memory.");
+	};
+	auto mapAndCopy = [&](VkDeviceMemory memory, VkDeviceSize size, const void *data)
+	{
+		void *mapped = nullptr;
+		if (vkMapMemory(m_device, memory, 0, size, 0, &mapped) != VK_SUCCESS) throw std::runtime_error("Failed to map bilinear test staging memory.");
+		std::memcpy(mapped, data, static_cast<size_t>(size));
+		vkUnmapMemory(m_device, memory);
+	};
+
+	try
+	{
+		const VkMemoryPropertyFlags hostFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+		createBuffer(kImageBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, hostFlags, imageStaging, imageStagingMemory);
+		mapAndCopy(imageStagingMemory, kImageBytes, pixels.data());
+		createBuffer(kCoordinateBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, hostFlags, coordinateStaging, coordinateStagingMemory);
+		mapAndCopy(coordinateStagingMemory, kCoordinateBytes, coordinateFloats.data());
+		createBuffer(kCoordinateBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, coordinateInput, coordinateInputMemory);
+		createBuffer(kColorBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, colorOutput, colorOutputMemory);
+		createBuffer(kValidityBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, validOutput, validOutputMemory);
+		createBuffer(kColorBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, hostFlags, colorReadback, colorReadbackMemory);
+		createBuffer(kValidityBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, hostFlags, validReadback, validReadbackMemory);
+
+		VkImageCreateInfo imageInfo{};
+		imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+		imageInfo.imageType = VK_IMAGE_TYPE_2D;
+		imageInfo.format = kFormat;
+		imageInfo.extent = VkExtent3D{ kWidth, kHeight, 1 };
+		imageInfo.mipLevels = 1;
+		imageInfo.arrayLayers = 1;
+		imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+		imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+		imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+		imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		if (vkCreateImage(m_device, &imageInfo, nullptr, &image) != VK_SUCCESS) throw std::runtime_error("Failed to create bilinear test image.");
+		VkMemoryRequirements imageRequirements{};
+		vkGetImageMemoryRequirements(m_device, image, &imageRequirements);
+		const uint32_t imageType = findMemoryType(imageRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		if (imageType == UINT32_MAX) throw std::runtime_error("No device-local memory type for bilinear test image.");
+		VkMemoryAllocateInfo imageAllocation{};
+		imageAllocation.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		imageAllocation.allocationSize = imageRequirements.size;
+		imageAllocation.memoryTypeIndex = imageType;
+		if (vkAllocateMemory(m_device, &imageAllocation, nullptr, &imageMemory) != VK_SUCCESS || vkBindImageMemory(m_device, image, imageMemory, 0) != VK_SUCCESS) throw std::runtime_error("Failed to allocate or bind bilinear test image memory.");
+
+		VkImageViewCreateInfo viewInfo{};
+		viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+		viewInfo.image = image;
+		viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+		viewInfo.format = kFormat;
+		viewInfo.subresourceRange = VkImageSubresourceRange{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		if (vkCreateImageView(m_device, &viewInfo, nullptr, &imageView) != VK_SUCCESS) throw std::runtime_error("Failed to create bilinear test image view.");
+		VkSamplerCreateInfo samplerInfo{};
+		samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+		samplerInfo.magFilter = VK_FILTER_NEAREST;
+		samplerInfo.minFilter = VK_FILTER_NEAREST;
+		samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+		samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		samplerInfo.anisotropyEnable = VK_FALSE;
+		samplerInfo.compareEnable = VK_FALSE;
+		samplerInfo.minLod = 0.0f;
+		samplerInfo.maxLod = 0.0f;
+		samplerInfo.unnormalizedCoordinates = VK_FALSE;
+		if (vkCreateSampler(m_device, &samplerInfo, nullptr, &sampler) != VK_SUCCESS) throw std::runtime_error("Failed to create bilinear test sampler.");
+
+		std::array<VkDescriptorSetLayoutBinding, 4> bindings{};
+		bindings[0] = VkDescriptorSetLayoutBinding{ 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr };
+		for (uint32_t i = 1; i < 4; ++i) bindings[i] = VkDescriptorSetLayoutBinding{ i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr };
+		VkDescriptorSetLayoutCreateInfo descriptorLayoutInfo{};
+		descriptorLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+		descriptorLayoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+		descriptorLayoutInfo.pBindings = bindings.data();
+		if (vkCreateDescriptorSetLayout(m_device, &descriptorLayoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS) throw std::runtime_error("Failed to create bilinear descriptor set layout.");
+		VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+		pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+		pipelineLayoutInfo.setLayoutCount = 1;
+		pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout;
+		if (vkCreatePipelineLayout(m_device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) throw std::runtime_error("Failed to create bilinear pipeline layout.");
+
+		const std::string shaderPath = "shaders/planeSweepBilinearSamplingSmokeTest.comp.spv";
+		const std::vector<char> shaderCode = ReadShaderFile(shaderPath);
+		if (shaderCode.empty()) throw std::runtime_error("Failed to load bilinear sampling shader SPIR-V.");
+		VkShaderModuleCreateInfo shaderInfo{};
+		shaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+		shaderInfo.codeSize = shaderCode.size();
+		shaderInfo.pCode = reinterpret_cast<const uint32_t *>(shaderCode.data());
+		if (vkCreateShaderModule(m_device, &shaderInfo, nullptr, &shaderModule) != VK_SUCCESS) throw std::runtime_error("Failed to create bilinear shader module.");
+		VkPipelineShaderStageCreateInfo shaderStage{};
+		shaderStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+		shaderStage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+		shaderStage.module = shaderModule;
+		shaderStage.pName = "main";
+		VkComputePipelineCreateInfo pipelineInfo{};
+		pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+		pipelineInfo.stage = shaderStage;
+		pipelineInfo.layout = pipelineLayout;
+		if (vkCreateComputePipelines(m_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline) != VK_SUCCESS) throw std::runtime_error("Failed to create bilinear compute pipeline.");
+
+		std::array<VkDescriptorPoolSize, 2> poolSizes{{
+			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 },
+			{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3 }
+		}};
+		VkDescriptorPoolCreateInfo poolInfo{};
+		poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+		poolInfo.maxSets = 1;
+		poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
+		poolInfo.pPoolSizes = poolSizes.data();
+		if (vkCreateDescriptorPool(m_device, &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS) throw std::runtime_error("Failed to create bilinear descriptor pool.");
+		VkDescriptorSetAllocateInfo descriptorAllocateInfo{};
+		descriptorAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+		descriptorAllocateInfo.descriptorPool = descriptorPool;
+		descriptorAllocateInfo.descriptorSetCount = 1;
+		descriptorAllocateInfo.pSetLayouts = &descriptorSetLayout;
+		VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+		if (vkAllocateDescriptorSets(m_device, &descriptorAllocateInfo, &descriptorSet) != VK_SUCCESS) throw std::runtime_error("Failed to allocate bilinear descriptor set.");
+		VkDescriptorImageInfo imageDescriptor{};
+		imageDescriptor.sampler = sampler;
+		imageDescriptor.imageView = imageView;
+		imageDescriptor.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		std::array<VkDescriptorBufferInfo, 3> bufferDescriptors{{
+			{ coordinateInput, 0, kCoordinateBytes },
+			{ colorOutput, 0, kColorBytes },
+			{ validOutput, 0, kValidityBytes }
+		}};
+		std::array<VkWriteDescriptorSet, 4> writes{};
+		writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[0].dstSet = descriptorSet;
+		writes[0].dstBinding = 0;
+		writes[0].descriptorCount = 1;
+		writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		writes[0].pImageInfo = &imageDescriptor;
+		for (uint32_t i = 1; i < 4; ++i)
+		{
+			writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			writes[i].dstSet = descriptorSet;
+			writes[i].dstBinding = i;
+			writes[i].descriptorCount = 1;
+			writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			writes[i].pBufferInfo = &bufferDescriptors[i - 1];
+		}
+		vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+
+		VkCommandBufferAllocateInfo commandAllocateInfo{};
+		commandAllocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+		commandAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+		commandAllocateInfo.commandPool = m_commandPool;
+		commandAllocateInfo.commandBufferCount = 1;
+		if (vkAllocateCommandBuffers(m_device, &commandAllocateInfo, &commandBuffer) != VK_SUCCESS) throw std::runtime_error("Failed to allocate bilinear command buffer.");
+		VkCommandBufferBeginInfo commandBeginInfo{};
+		commandBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+		commandBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+		if (vkBeginCommandBuffer(commandBuffer, &commandBeginInfo) != VK_SUCCESS) throw std::runtime_error("Failed to begin bilinear command buffer.");
+
+		VkImageMemoryBarrier imageToTransfer{};
+		imageToTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		imageToTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		imageToTransfer.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		imageToTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		imageToTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		imageToTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		imageToTransfer.image = image;
+		imageToTransfer.subresourceRange = VkImageSubresourceRange{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &imageToTransfer);
+		VkBufferImageCopy imageCopy{};
+		imageCopy.imageSubresource = VkImageSubresourceLayers{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+		imageCopy.imageExtent = VkExtent3D{ kWidth, kHeight, 1 };
+		vkCmdCopyBufferToImage(commandBuffer, imageStaging, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &imageCopy);
+		VkImageMemoryBarrier imageToRead{};
+		imageToRead.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		imageToRead.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		imageToRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		imageToRead.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		imageToRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		imageToRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		imageToRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		imageToRead.image = image;
+		imageToRead.subresourceRange = VkImageSubresourceRange{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &imageToRead);
+
+		VkBufferCopy coordinateCopy{};
+		coordinateCopy.size = kCoordinateBytes;
+		vkCmdCopyBuffer(commandBuffer, coordinateStaging, coordinateInput, 1, &coordinateCopy);
+		VkBufferMemoryBarrier coordinateBarrier{};
+		coordinateBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+		coordinateBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		coordinateBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		coordinateBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		coordinateBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		coordinateBarrier.buffer = coordinateInput;
+		coordinateBarrier.size = kCoordinateBytes;
+		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 1, &coordinateBarrier, 0, nullptr);
+
+		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+		vkCmdDispatch(commandBuffer, 1, 1, 1);
+
+		VkBufferMemoryBarrier outputBarriers[2]{};
+		outputBarriers[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+		outputBarriers[0].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+		outputBarriers[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+		outputBarriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		outputBarriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		outputBarriers[0].buffer = colorOutput;
+		outputBarriers[0].size = kColorBytes;
+		outputBarriers[1] = outputBarriers[0];
+		outputBarriers[1].buffer = validOutput;
+		outputBarriers[1].size = kValidityBytes;
+		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 2, outputBarriers, 0, nullptr);
+		VkBufferCopy colorCopy{};
+		colorCopy.size = kColorBytes;
+		vkCmdCopyBuffer(commandBuffer, colorOutput, colorReadback, 1, &colorCopy);
+		VkBufferCopy validCopy{};
+		validCopy.size = kValidityBytes;
+		vkCmdCopyBuffer(commandBuffer, validOutput, validReadback, 1, &validCopy);
+		if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) throw std::runtime_error("Failed to record bilinear command buffer.");
+
+		VkFenceCreateInfo fenceInfo{};
+		fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+		if (vkCreateFence(m_device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) throw std::runtime_error("Failed to create bilinear fence.");
+		VkSubmitInfo submitInfo{};
+		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+		submitInfo.commandBufferCount = 1;
+		submitInfo.pCommandBuffers = &commandBuffer;
+		if (vkQueueSubmit(m_queue, 1, &submitInfo, fence) != VK_SUCCESS) throw std::runtime_error("Failed to submit bilinear command buffer.");
+		submitted = true;
+		if (vkWaitForFences(m_device, 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) throw std::runtime_error("Failed to wait for bilinear fence.");
+		submitted = false;
+		vkDestroyFence(m_device, fence, nullptr);
+		fence = VK_NULL_HANDLE;
+
+		std::array<bool, kSampleCount> expectedValid{};
+		std::array<std::array<float, 4>, kSampleCount> expectedColors{};
+		uint32_t validSampleCount = 0;
+		for (uint32_t i = 0; i < kSampleCount; ++i)
+		{
+			const float x = coordinates[i].x;
+			const float y = coordinates[i].y;
+			if (x < 0.0f || y < 0.0f || x > static_cast<float>(kWidth - 1) || y > static_cast<float>(kHeight - 1)) continue;
+			expectedValid[i] = true;
+			++validSampleCount;
+			const uint32_t x0 = static_cast<uint32_t>(std::floor(x));
+			const uint32_t y0 = static_cast<uint32_t>(std::floor(y));
+			const uint32_t x1 = std::min(kWidth - 1, x0 + 1);
+			const uint32_t y1 = std::min(kHeight - 1, y0 + 1);
+			const float tx = x - static_cast<float>(x0);
+			const float ty = y - static_cast<float>(y0);
+			for (uint32_t channel = 0; channel < 4; ++channel)
+			{
+				auto sample = [&](uint32_t sx, uint32_t sy)
+				{
+					const size_t index = (static_cast<size_t>(sy) * kWidth + sx) * 4 + channel;
+					return static_cast<float>(pixels[index]) / 255.0f;
+				};
+				const float top = (sample(x0, y0) * (1.0f - tx)) + (sample(x1, y0) * tx);
+				const float bottom = (sample(x0, y1) * (1.0f - tx)) + (sample(x1, y1) * tx);
+				expectedColors[i][channel] = (top * (1.0f - ty)) + (bottom * ty);
+			}
+		}
+
+		void *validMapped = nullptr;
+		void *colorMapped = nullptr;
+		if (vkMapMemory(m_device, validReadbackMemory, 0, kValidityBytes, 0, &validMapped) != VK_SUCCESS) throw std::runtime_error("Failed to map bilinear validity readback.");
+		const uint32_t *actualValidity = static_cast<const uint32_t *>(validMapped);
+		bool matched = true;
+		for (uint32_t i = 0; i < kSampleCount; ++i)
+		{
+			const bool actualValid = actualValidity[i] != 0;
+			if (expectedValid[i] != actualValid)
+			{
+				UIUtility::Print(std::string("Bilinear validity mismatch: sample ") + std::to_string(i) + " x=" + std::to_string(coordinates[i].x) + " y=" + std::to_string(coordinates[i].y) + " expected valid=" + (expectedValid[i] ? "true" : "false") + " actual valid=" + (actualValid ? "true" : "false") + "\n");
+				matched = false;
+				break;
+			}
+		}
+		vkUnmapMemory(m_device, validReadbackMemory);
+
+		float maximumAbsoluteError = 0.0f;
+		if (matched)
+		{
+			if (vkMapMemory(m_device, colorReadbackMemory, 0, kColorBytes, 0, &colorMapped) != VK_SUCCESS) throw std::runtime_error("Failed to map bilinear color readback.");
+			const float *actualColors = static_cast<const float *>(colorMapped);
+			constexpr const char *channelNames[] = { "R", "G", "B", "A" };
+			for (uint32_t i = 0; i < kSampleCount && matched; ++i)
+			{
+				if (!expectedValid[i]) continue;
+				for (uint32_t channel = 0; channel < 4; ++channel)
+				{
+					const float actual = actualColors[i * 4 + channel];
+					const float expected = expectedColors[i][channel];
+					const float error = std::fabs(expected - actual);
+					maximumAbsoluteError = std::max(maximumAbsoluteError, error);
+					if (error > 1e-5f)
+					{
+						UIUtility::Print(std::string("Bilinear color mismatch: sample ") + std::to_string(i) + " x=" + std::to_string(coordinates[i].x) + " y=" + std::to_string(coordinates[i].y) + " channel=" + channelNames[channel] + " expected=" + std::to_string(expected) + " actual=" + std::to_string(actual) + " absolute error=" + std::to_string(error) + "\n");
+						matched = false;
+						break;
+					}
+				}
+				if (matched && (coordinates[i].x != std::floor(coordinates[i].x) || coordinates[i].y != std::floor(coordinates[i].y)))
+				{
+					UIUtility::Print(std::string("Bilinear valid sample ") + std::to_string(i) + " CPU RGBA=(" + std::to_string(expectedColors[i][0]) + "," + std::to_string(expectedColors[i][1]) + "," + std::to_string(expectedColors[i][2]) + "," + std::to_string(expectedColors[i][3]) + ") GPU RGBA=(" + std::to_string(actualColors[i * 4]) + "," + std::to_string(actualColors[i * 4 + 1]) + "," + std::to_string(actualColors[i * 4 + 2]) + "," + std::to_string(actualColors[i * 4 + 3]) + ")\n");
+				}
+			}
+			vkUnmapMemory(m_device, colorReadbackMemory);
+		}
+
+		if (matched)
+		{
+			UIUtility::Print(std::string("PlaneSweep GPU bilinear-sampling smoke test succeeded:\n16 / 16 validity results matched CPU SampleBilinear semantics.\n") + std::to_string(validSampleCount) + " / " + std::to_string(validSampleCount) + " valid RGBA samples matched CPU bilinear results.\n");
+			UIUtility::Print(std::string("Maximum valid RGBA component absolute error: ") + std::to_string(maximumAbsoluteError) + "\n");
+		}
+		cleanup();
+		return matched;
+	}
+	catch (...)
+	{
+		cleanup();
+		throw;
+	}
+}
+
 }

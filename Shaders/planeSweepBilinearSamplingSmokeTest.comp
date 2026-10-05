@@ -1,0 +1,70 @@
+#version 450
+
+layout(local_size_x = 16,
+	   local_size_y = 1,
+	   local_size_z = 1) in;
+
+layout(set = 0, binding = 0)
+uniform sampler2D testImage;
+
+layout(set = 0, binding = 1, std430) readonly buffer CoordinateBuffer
+{
+	float values[];
+} coordinates;
+
+layout(set = 0, binding = 2, std430) writeonly buffer ColorOutput
+{
+	vec4 values[];
+} colorOutput;
+
+layout(set = 0, binding = 3, std430) writeonly buffer ValidOutput
+{
+	uint values[];
+} validOutput;
+
+bool SampleBilinearCpuEquivalent(sampler2D image, vec2 pixel, out vec4 color)
+{
+	ivec2 size = textureSize(image, 0);
+
+	if (size.x <= 0 ||
+		size.y <= 0 ||
+		pixel.x < 0.0 ||
+		pixel.y < 0.0 ||
+		pixel.x > float(size.x - 1) ||
+		pixel.y > float(size.y - 1))
+	{
+		color = vec4(0.0);
+		return false;
+	}
+
+	int x0 = int(floor(pixel.x));
+	int y0 = int(floor(pixel.y));
+	int x1 = min(size.x - 1, x0 + 1);
+	int y1 = min(size.y - 1, y0 + 1);
+	float tx = pixel.x - float(x0);
+	float ty = pixel.y - float(y0);
+
+	vec4 c00 = texelFetch(image, ivec2(x0, y0), 0);
+	vec4 c10 = texelFetch(image, ivec2(x1, y0), 0);
+	vec4 c01 = texelFetch(image, ivec2(x0, y1), 0);
+	vec4 c11 = texelFetch(image, ivec2(x1, y1), 0);
+
+	vec4 top = (c00 * (1.0 - tx)) + (c10 * tx);
+	vec4 bottom = (c01 * (1.0 - tx)) + (c11 * tx);
+	color = (top * (1.0 - ty)) + (bottom * ty);
+	return true;
+}
+
+void main()
+{
+	uint i = gl_GlobalInvocationID.x;
+
+	if (i >= 16)
+		return;
+
+	vec2 pixel = vec2(coordinates.values[i * 2], coordinates.values[i * 2 + 1]);
+	vec4 color;
+	bool valid = SampleBilinearCpuEquivalent(testImage, pixel, color);
+	colorOutput.values[i] = color;
+	validOutput.values[i] = valid ? 1u : 0u;
+}
