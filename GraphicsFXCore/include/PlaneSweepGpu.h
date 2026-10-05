@@ -33,6 +33,14 @@ namespace graphicsFX
 			const std::vector<float> &sampleValues,
 			const std::vector<float> &expectedPositions
 		);
+		bool RunProjectPointSmokeTest(
+			const std::vector<GpuCameraIntrinsics> &intrinsics,
+			const std::vector<GpuCameraPose> &poses,
+			const std::vector<uint32_t> &cameraIndices,
+			const std::vector<float> &worldPoints,
+			const std::vector<uint32_t> &expectedValidity,
+			const std::vector<float> &expectedProjections
+		);
 		bool RunRealImageSamplingSmokeTest(
 			const TextureData &texture,
 			const TextureData *maskTexturePtr,

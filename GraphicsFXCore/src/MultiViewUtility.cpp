@@ -3320,10 +3320,10 @@ namespace graphicsFX
             {
                 UIUtility::Print("BuildColmapPlaneSweepPointCloud received PlaneSweepGpu handoff.\n");
             }
-            static bool unprojectPixelTestAttempted = false;
-            if (planeSweepGpuPtr != nullptr && !unprojectPixelTestAttempted)
+            static bool projectPointTestAttempted = false;
+            if (planeSweepGpuPtr != nullptr && !projectPointTestAttempted)
             {
-                unprojectPixelTestAttempted = true;
+                projectPointTestAttempted = true;
                 std::vector<ColmapCameraData> cameras(3);
                 std::vector<ColmapCameraIntrinsicData> intrinsics(3);
                 cameras[0].m_position = Float3{ 1.25f, -2.5f, 3.75f };
@@ -3350,32 +3350,43 @@ namespace graphicsFX
                 intrinsics[2].m_cx = 959.25; intrinsics[2].m_cy = 539.75; intrinsics[2].m_k1 = 0.025; intrinsics[2].m_k2 = -0.006;
                 intrinsics[2].m_p1 = 0.0018; intrinsics[2].m_p2 = -0.0012;
 
-                const std::array<std::array<float, 3>, 16> cases{{
-                    {{0, 319.0f, 239.0f}}, {{0, 0.0f, 0.0f}}, {{0, 639.0f, 479.0f}}, {{0, 123.25f, 321.75f}}, {{0, 500.5f, 100.125f}},
-                    {{1, 639.75f, 360.25f}}, {{1, 0.0f, 0.0f}}, {{1, 1279.0f, 719.0f}}, {{1, 250.125f, 600.875f}}, {{1, 1000.5f, 111.25f}},
-                    {{2, 958.75f, 539.25f}}, {{2, 0.0f, 0.0f}}, {{2, 1919.0f, 1079.0f}}, {{2, 400.375f, 700.625f}}, {{2, 1500.875f, 250.5f}}, {{2, 959.125f, 540.875f}}
+                const std::array<std::array<float, 4>, 16> cases{{
+                    {{0, 0.0f, 0.0f, 1.0f}}, {{0, -0.35f, -0.25f, 2.0f}}, {{0, 0.45f, 0.30f, 10.0f}}, {{0, 1.20f, -0.80f, 3.0f}}, {{0, 0.10f, 0.20f, 0.00005f}},
+                    {{1, 0.0f, 0.0f, 1.0f}}, {{1, -0.50f, 0.35f, 4.0f}}, {{1, 0.60f, -0.40f, 12.0f}}, {{1, 1.10f, 0.90f, 2.5f}}, {{1, 0.0f, 0.0f, -1.0f}},
+                    {{2, 0.0f, 0.0f, 1.0f}}, {{2, -0.40f, -0.30f, 5.0f}}, {{2, 0.50f, 0.45f, 20.0f}}, {{2, -0.95f, 0.65f, 2.25f}}, {{2, 0.85f, -0.70f, 40.0f}}, {{2, 0.25f, 0.15f, 0.0f}}
                 }};
-                const std::array<float, 16> depths{{ 1.0f, 0.5f, 10.0f, 3.2f, 25.0f, 1.0f, 2.5f, 12.0f, 0.75f, 35.0f, 1.0f, 5.0f, 20.0f, 2.25f, 40.0f, 0.125f }};
                 std::vector<uint32_t> caseCameraIndices(16);
-                std::vector<float> sampleValues(16 * 4, 0.0f);
-                std::vector<float> expectedPositions(16 * 3, 0.0f);
+                std::vector<float> worldPoints(16 * 4, 0.0f);
+                std::vector<uint32_t> expectedValidity(16, 0);
+                std::vector<float> expectedProjections(16 * 3, 0.0f);
                 for (uint32_t i = 0; i < 16; ++i)
                 {
                     const uint32_t cameraIndex = static_cast<uint32_t>(cases[i][0]);
-                    const float x = cases[i][1];
-                    const float y = cases[i][2];
-                    const float depth = depths[i];
+                    const float localX = cases[i][1];
+                    const float localY = cases[i][2];
+                    const float cameraDepth = cases[i][3];
                     caseCameraIndices[i] = cameraIndex;
-                    sampleValues[i * 4] = x; sampleValues[i * 4 + 1] = y; sampleValues[i * 4 + 2] = depth;
-                    const Float3 expected = MultiViewPlaneSweepUtility::UnprojectPixel(cameras[cameraIndex], intrinsics[cameraIndex], x, y, depth);
-                    expectedPositions[i * 3] = expected.x; expectedPositions[i * 3 + 1] = expected.y; expectedPositions[i * 3 + 2] = expected.z;
+                    const ColmapCameraData &camera = cameras[cameraIndex];
+                    const Float3 point = camera.m_position + (camera.m_right * (localX * cameraDepth)) -
+                        (camera.m_up * (localY * cameraDepth)) + (camera.m_forward * cameraDepth);
+                    worldPoints[i * 4] = point.x; worldPoints[i * 4 + 1] = point.y; worldPoints[i * 4 + 2] = point.z;
+                    float cpuX = 0.0f, cpuY = 0.0f, cpuDepth = 0.0f;
+                    const bool valid = MultiViewPlaneSweepUtility::ProjectPoint(camera, intrinsics[cameraIndex], point, cpuX, cpuY, cpuDepth);
+                    expectedValidity[i] = valid ? 1u : 0u;
+                    expectedProjections[i * 3 + 2] = cpuDepth;
+                    if (valid)
+                    {
+                        expectedProjections[i * 3] = cpuX;
+                        expectedProjections[i * 3 + 1] = cpuY;
+                    }
                 }
-                planeSweepGpuPtr->RunUnprojectPixelSmokeTest(
+                planeSweepGpuPtr->RunProjectPointSmokeTest(
                     MakeGpuCameraIntrinsicsArray(intrinsics),
                     MakeGpuCameraPoseArray(cameras),
                     caseCameraIndices,
-                    sampleValues,
-                    expectedPositions
+                    worldPoints,
+                    expectedValidity,
+                    expectedProjections
                 );
             }
             //Returns an empty result when plane sweep input is unavailable or disabled.

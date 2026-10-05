@@ -849,6 +849,230 @@ bool PlaneSweepGpu::RunUnprojectPixelSmokeTest(
 	}
 }
 
+bool PlaneSweepGpu::RunProjectPointSmokeTest(
+	const std::vector<GpuCameraIntrinsics> &intrinsics,
+	const std::vector<GpuCameraPose> &poses,
+	const std::vector<uint32_t> &cameraIndices,
+	const std::vector<float> &worldPoints,
+	const std::vector<uint32_t> &expectedValidity,
+	const std::vector<float> &expectedProjections)
+{
+	if (!m_initialized) throw std::runtime_error("PlaneSweepGpu not initialized.");
+	constexpr uint32_t kSampleCount = 16;
+	if (intrinsics.size() != 3 || poses.size() != 3 || cameraIndices.size() != kSampleCount || worldPoints.size() != kSampleCount * 4 ||
+		expectedValidity.size() != kSampleCount || expectedProjections.size() != kSampleCount * 3)
+		throw std::invalid_argument("ProjectPoint smoke test requires exactly 3 cameras and 16 complete cases.");
+
+	const std::array<VkDeviceSize, 4> inputSizes{{
+		static_cast<VkDeviceSize>(intrinsics.size() * sizeof(GpuCameraIntrinsics)),
+		static_cast<VkDeviceSize>(poses.size() * sizeof(GpuCameraPose)),
+		static_cast<VkDeviceSize>(worldPoints.size() * sizeof(float)),
+		static_cast<VkDeviceSize>(cameraIndices.size() * sizeof(uint32_t))
+	}};
+	const std::array<const void *, 4> inputData{{ intrinsics.data(), poses.data(), worldPoints.data(), cameraIndices.data() }};
+	constexpr VkDeviceSize projectionBytes = kSampleCount * 4 * sizeof(float);
+	constexpr VkDeviceSize validityBytes = kSampleCount * sizeof(uint32_t);
+	std::array<VkBuffer, 4> stagingBuffers{}, inputBuffers{};
+	std::array<VkDeviceMemory, 4> stagingMemories{}, inputMemories{};
+	VkBuffer projectionOutput = VK_NULL_HANDLE, validityOutput = VK_NULL_HANDLE, projectionReadback = VK_NULL_HANDLE, validityReadback = VK_NULL_HANDLE;
+	VkDeviceMemory projectionOutputMemory = VK_NULL_HANDLE, validityOutputMemory = VK_NULL_HANDLE, projectionReadbackMemory = VK_NULL_HANDLE, validityReadbackMemory = VK_NULL_HANDLE;
+	VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
+	VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+	VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+	VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+	VkShaderModule shaderModule = VK_NULL_HANDLE;
+	VkPipeline pipeline = VK_NULL_HANDLE;
+	VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+	VkFence fence = VK_NULL_HANDLE;
+	bool submitted = false;
+	auto cleanup = [&]()
+	{
+		if (submitted) { vkDeviceWaitIdle(m_device); submitted = false; }
+		if (fence != VK_NULL_HANDLE) { vkDestroyFence(m_device, fence, nullptr); fence = VK_NULL_HANDLE; }
+		if (commandBuffer != VK_NULL_HANDLE) { vkFreeCommandBuffers(m_device, m_commandPool, 1, &commandBuffer); commandBuffer = VK_NULL_HANDLE; }
+		if (pipeline != VK_NULL_HANDLE) { vkDestroyPipeline(m_device, pipeline, nullptr); pipeline = VK_NULL_HANDLE; }
+		if (shaderModule != VK_NULL_HANDLE) { vkDestroyShaderModule(m_device, shaderModule, nullptr); shaderModule = VK_NULL_HANDLE; }
+		if (pipelineLayout != VK_NULL_HANDLE) { vkDestroyPipelineLayout(m_device, pipelineLayout, nullptr); pipelineLayout = VK_NULL_HANDLE; }
+		if (descriptorPool != VK_NULL_HANDLE) { vkDestroyDescriptorPool(m_device, descriptorPool, nullptr); descriptorPool = VK_NULL_HANDLE; }
+		if (descriptorSetLayout != VK_NULL_HANDLE) { vkDestroyDescriptorSetLayout(m_device, descriptorSetLayout, nullptr); descriptorSetLayout = VK_NULL_HANDLE; }
+		auto destroyBuffer = [&](VkBuffer &buffer, VkDeviceMemory &memory)
+		{
+			if (buffer != VK_NULL_HANDLE) { vkDestroyBuffer(m_device, buffer, nullptr); buffer = VK_NULL_HANDLE; }
+			if (memory != VK_NULL_HANDLE) { vkFreeMemory(m_device, memory, nullptr); memory = VK_NULL_HANDLE; }
+		};
+		for (uint32_t i = 0; i < 4; ++i) { destroyBuffer(stagingBuffers[i], stagingMemories[i]); destroyBuffer(inputBuffers[i], inputMemories[i]); }
+		destroyBuffer(projectionOutput, projectionOutputMemory); destroyBuffer(validityOutput, validityOutputMemory);
+		destroyBuffer(projectionReadback, projectionReadbackMemory); destroyBuffer(validityReadback, validityReadbackMemory);
+	};
+	auto findMemoryType = [&](uint32_t bits, VkMemoryPropertyFlags required)
+	{
+		VkPhysicalDeviceMemoryProperties memoryProperties{}; vkGetPhysicalDeviceMemoryProperties(m_physicalDevice, &memoryProperties);
+		for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i)
+			if ((bits & (1u << i)) && (memoryProperties.memoryTypes[i].propertyFlags & required) == required) return i;
+		return UINT32_MAX;
+	};
+	auto createBuffer = [&](VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags flags, VkBuffer &buffer, VkDeviceMemory &memory)
+	{
+		VkBufferCreateInfo info{}; info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO; info.size = size; info.usage = usage; info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		if (vkCreateBuffer(m_device, &info, nullptr, &buffer) != VK_SUCCESS) throw std::runtime_error("Failed to create ProjectPoint buffer.");
+		VkMemoryRequirements requirements{}; vkGetBufferMemoryRequirements(m_device, buffer, &requirements);
+		const uint32_t type = findMemoryType(requirements.memoryTypeBits, flags);
+		if (type == UINT32_MAX) throw std::runtime_error("No suitable memory type for ProjectPoint buffer.");
+		VkMemoryAllocateInfo allocation{}; allocation.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO; allocation.allocationSize = requirements.size; allocation.memoryTypeIndex = type;
+		if (vkAllocateMemory(m_device, &allocation, nullptr, &memory) != VK_SUCCESS || vkBindBufferMemory(m_device, buffer, memory, 0) != VK_SUCCESS) throw std::runtime_error("Failed to allocate or bind ProjectPoint buffer memory.");
+	};
+	try
+	{
+		const VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+		for (uint32_t i = 0; i < 4; ++i)
+		{
+			createBuffer(inputSizes[i], VK_BUFFER_USAGE_TRANSFER_SRC_BIT, host, stagingBuffers[i], stagingMemories[i]);
+			void *mapped = nullptr;
+			if (vkMapMemory(m_device, stagingMemories[i], 0, inputSizes[i], 0, &mapped) != VK_SUCCESS) throw std::runtime_error("Failed to map ProjectPoint staging memory.");
+			std::memcpy(mapped, inputData[i], static_cast<size_t>(inputSizes[i])); vkUnmapMemory(m_device, stagingMemories[i]);
+			createBuffer(inputSizes[i], VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, inputBuffers[i], inputMemories[i]);
+		}
+		createBuffer(projectionBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, projectionOutput, projectionOutputMemory);
+		createBuffer(validityBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, validityOutput, validityOutputMemory);
+		createBuffer(projectionBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, host, projectionReadback, projectionReadbackMemory);
+		createBuffer(validityBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, host, validityReadback, validityReadbackMemory);
+
+		std::array<VkDescriptorSetLayoutBinding, 6> bindings{};
+		for (uint32_t i = 0; i < 6; ++i) { bindings[i].binding = i; bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; bindings[i].descriptorCount = 1; bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT; }
+		VkDescriptorSetLayoutCreateInfo setLayoutInfo{}; setLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO; setLayoutInfo.bindingCount = static_cast<uint32_t>(bindings.size()); setLayoutInfo.pBindings = bindings.data();
+		if (vkCreateDescriptorSetLayout(m_device, &setLayoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS) throw std::runtime_error("Failed to create ProjectPoint descriptor layout.");
+		VkDescriptorPoolSize poolSize{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6 };
+		VkDescriptorPoolCreateInfo poolInfo{}; poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO; poolInfo.maxSets = 1; poolInfo.poolSizeCount = 1; poolInfo.pPoolSizes = &poolSize;
+		if (vkCreateDescriptorPool(m_device, &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS) throw std::runtime_error("Failed to create ProjectPoint descriptor pool.");
+		VkDescriptorSetAllocateInfo setAllocate{}; setAllocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO; setAllocate.descriptorPool = descriptorPool; setAllocate.descriptorSetCount = 1; setAllocate.pSetLayouts = &descriptorSetLayout;
+		if (vkAllocateDescriptorSets(m_device, &setAllocate, &descriptorSet) != VK_SUCCESS) throw std::runtime_error("Failed to allocate ProjectPoint descriptor set.");
+		std::array<VkDescriptorBufferInfo, 6> bufferInfos{};
+		for (uint32_t i = 0; i < 4; ++i) bufferInfos[i] = VkDescriptorBufferInfo{ inputBuffers[i], 0, inputSizes[i] };
+		bufferInfos[4] = VkDescriptorBufferInfo{ projectionOutput, 0, projectionBytes };
+		bufferInfos[5] = VkDescriptorBufferInfo{ validityOutput, 0, validityBytes };
+		std::array<VkWriteDescriptorSet, 6> writes{};
+		for (uint32_t i = 0; i < 6; ++i) { writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; writes[i].dstSet = descriptorSet; writes[i].dstBinding = i; writes[i].descriptorCount = 1; writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[i].pBufferInfo = &bufferInfos[i]; }
+		vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+
+		const std::vector<char> shaderCode = ReadShaderFile("shaders/planeSweepProjectPointSmokeTest.comp.spv");
+		if (shaderCode.empty()) throw std::runtime_error("Failed to load ProjectPoint smoke-test SPIR-V.");
+		VkShaderModuleCreateInfo shaderInfo{}; shaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO; shaderInfo.codeSize = shaderCode.size(); shaderInfo.pCode = reinterpret_cast<const uint32_t *>(shaderCode.data());
+		if (vkCreateShaderModule(m_device, &shaderInfo, nullptr, &shaderModule) != VK_SUCCESS) throw std::runtime_error("Failed to create ProjectPoint shader module.");
+		VkPipelineLayoutCreateInfo layoutInfo{}; layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO; layoutInfo.setLayoutCount = 1; layoutInfo.pSetLayouts = &descriptorSetLayout;
+		if (vkCreatePipelineLayout(m_device, &layoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) throw std::runtime_error("Failed to create ProjectPoint pipeline layout.");
+		VkPipelineShaderStageCreateInfo stage{}; stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO; stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; stage.module = shaderModule; stage.pName = "main";
+		VkComputePipelineCreateInfo pipelineInfo{}; pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO; pipelineInfo.stage = stage; pipelineInfo.layout = pipelineLayout;
+		if (vkCreateComputePipelines(m_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline) != VK_SUCCESS) throw std::runtime_error("Failed to create ProjectPoint compute pipeline.");
+
+		VkCommandBufferAllocateInfo commandAllocate{}; commandAllocate.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO; commandAllocate.commandPool = m_commandPool; commandAllocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; commandAllocate.commandBufferCount = 1;
+		if (vkAllocateCommandBuffers(m_device, &commandAllocate, &commandBuffer) != VK_SUCCESS) throw std::runtime_error("Failed to allocate ProjectPoint command buffer.");
+		VkCommandBufferBeginInfo commandBegin{}; commandBegin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO; commandBegin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+		if (vkBeginCommandBuffer(commandBuffer, &commandBegin) != VK_SUCCESS) throw std::runtime_error("Failed to begin ProjectPoint command buffer.");
+		for (uint32_t i = 0; i < 4; ++i) { VkBufferCopy copy{}; copy.size = inputSizes[i]; vkCmdCopyBuffer(commandBuffer, stagingBuffers[i], inputBuffers[i], 1, &copy); }
+		std::array<VkBufferMemoryBarrier, 4> inputBarriers{};
+		for (uint32_t i = 0; i < 4; ++i) { inputBarriers[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER; inputBarriers[i].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; inputBarriers[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT; inputBarriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; inputBarriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; inputBarriers[i].buffer = inputBuffers[i]; inputBarriers[i].size = inputSizes[i]; }
+		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, static_cast<uint32_t>(inputBarriers.size()), inputBarriers.data(), 0, nullptr);
+		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+		vkCmdDispatch(commandBuffer, 1, 1, 1);
+		std::array<VkBufferMemoryBarrier, 2> outputBarriers{};
+		for (uint32_t i = 0; i < 2; ++i) { outputBarriers[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER; outputBarriers[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT; outputBarriers[i].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT; outputBarriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; outputBarriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; }
+		outputBarriers[0].buffer = projectionOutput; outputBarriers[0].size = projectionBytes; outputBarriers[1].buffer = validityOutput; outputBarriers[1].size = validityBytes;
+		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, static_cast<uint32_t>(outputBarriers.size()), outputBarriers.data(), 0, nullptr);
+		VkBufferCopy projectionCopy{}; projectionCopy.size = projectionBytes; vkCmdCopyBuffer(commandBuffer, projectionOutput, projectionReadback, 1, &projectionCopy);
+		VkBufferCopy validityCopy{}; validityCopy.size = validityBytes; vkCmdCopyBuffer(commandBuffer, validityOutput, validityReadback, 1, &validityCopy);
+		std::array<VkBufferMemoryBarrier, 2> hostBarriers{};
+		for (uint32_t i = 0; i < 2; ++i) { hostBarriers[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER; hostBarriers[i].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; hostBarriers[i].dstAccessMask = VK_ACCESS_HOST_READ_BIT; hostBarriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; hostBarriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; }
+		hostBarriers[0].buffer = projectionReadback; hostBarriers[0].size = projectionBytes; hostBarriers[1].buffer = validityReadback; hostBarriers[1].size = validityBytes;
+		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, static_cast<uint32_t>(hostBarriers.size()), hostBarriers.data(), 0, nullptr);
+		if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) throw std::runtime_error("Failed to end ProjectPoint command buffer.");
+		VkFenceCreateInfo fenceInfo{}; fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+		if (vkCreateFence(m_device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) throw std::runtime_error("Failed to create ProjectPoint fence.");
+		VkSubmitInfo submit{}; submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO; submit.commandBufferCount = 1; submit.pCommandBuffers = &commandBuffer;
+		if (vkQueueSubmit(m_queue, 1, &submit, fence) != VK_SUCCESS) throw std::runtime_error("Failed to submit ProjectPoint command buffer.");
+		submitted = true;
+		if (vkWaitForFences(m_device, 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) throw std::runtime_error("Failed to wait for ProjectPoint fence.");
+		submitted = false;
+		vkDestroyFence(m_device, fence, nullptr); fence = VK_NULL_HANDLE;
+		std::array<float, kSampleCount * 4> actualProjections{};
+		std::array<uint32_t, kSampleCount> actualValidity{};
+		void *mapped = nullptr;
+		if (vkMapMemory(m_device, projectionReadbackMemory, 0, projectionBytes, 0, &mapped) != VK_SUCCESS) throw std::runtime_error("Failed to map ProjectPoint projection readback.");
+		std::memcpy(actualProjections.data(), mapped, static_cast<size_t>(projectionBytes)); vkUnmapMemory(m_device, projectionReadbackMemory);
+		if (vkMapMemory(m_device, validityReadbackMemory, 0, validityBytes, 0, &mapped) != VK_SUCCESS) throw std::runtime_error("Failed to map ProjectPoint validity readback.");
+		std::memcpy(actualValidity.data(), mapped, static_cast<size_t>(validityBytes)); vkUnmapMemory(m_device, validityReadbackMemory);
+
+		for (uint32_t i = 0; i < kSampleCount; ++i)
+		{
+			const size_t pointOffset = static_cast<size_t>(i) * 4;
+			const bool cpuValid = expectedValidity[i] != 0;
+			const bool gpuValid = actualValidity[i] != 0;
+			if (cpuValid != gpuValid)
+			{
+				UIUtility::Print("ProjectPoint validity mismatch: test=" + std::to_string(i) + ", camera=" + std::to_string(cameraIndices[i]) + ", point=(" + std::to_string(worldPoints[pointOffset]) + "," + std::to_string(worldPoints[pointOffset + 1]) + "," + std::to_string(worldPoints[pointOffset + 2]) + "), CPU valid=" + (cpuValid ? "true" : "false") + ", GPU valid=" + (gpuValid ? "true" : "false") + ", CPU depth=" + std::to_string(expectedProjections[i * 3 + 2]) + ", GPU depth=" + std::to_string(actualProjections[i * 4 + 2]) + ".\n");
+				cleanup();
+				return false;
+			}
+		}
+		float maximumXError = 0.0f, maximumYError = 0.0f, maximumDepthError = 0.0f;
+		uint32_t validCount = 0;
+		bool outOfImageValidCase = false;
+		const auto pixelTolerance = [](float cpuValue, float gpuValue)
+		{
+			return std::max(
+				1e-4f,
+				2.0f * std::numeric_limits<float>::epsilon() *
+					std::max(std::fabs(cpuValue), std::fabs(gpuValue)));
+		};
+		for (uint32_t i = 0; i < kSampleCount; ++i)
+		{
+			if (expectedValidity[i] == 0) continue;
+			++validCount;
+			const float cpuX = expectedProjections[i * 3];
+			const float gpuX = actualProjections[i * 4];
+			const float cpuY = expectedProjections[i * 3 + 1];
+			const float gpuY = actualProjections[i * 4 + 1];
+			const float xError = std::fabs(gpuX - cpuX);
+			const float yError = std::fabs(gpuY - cpuY);
+			const float toleranceX = pixelTolerance(cpuX, gpuX);
+			const float toleranceY = pixelTolerance(cpuY, gpuY);
+			const float depthError = std::fabs(actualProjections[i * 4 + 2] - expectedProjections[i * 3 + 2]);
+			maximumXError = std::max(maximumXError, xError); maximumYError = std::max(maximumYError, yError); maximumDepthError = std::max(maximumDepthError, depthError);
+			if (i == 8) UIUtility::Print("ProjectPoint tolerance diagnostic:\nerrorY=" + std::to_string(yError) + "\ntoleranceY=" + std::to_string(toleranceY) + "\n");
+			const GpuCameraIntrinsics &intrinsic = intrinsics[cameraIndices[i]];
+			if (expectedProjections[i * 3] < 0.0f || expectedProjections[i * 3] > static_cast<float>(intrinsic.m_width - 1) ||
+				expectedProjections[i * 3 + 1] < 0.0f || expectedProjections[i * 3 + 1] > static_cast<float>(intrinsic.m_height - 1)) outOfImageValidCase = true;
+			if (xError > toleranceX || yError > toleranceY || depthError > 1e-5f || actualProjections[i * 4 + 3] != 0.0f)
+			{
+				UIUtility::Print("ProjectPoint projection mismatch: test=" + std::to_string(i) + ", camera=" + std::to_string(cameraIndices[i]) + ", point=(" + std::to_string(worldPoints[i * 4]) + "," + std::to_string(worldPoints[i * 4 + 1]) + "," + std::to_string(worldPoints[i * 4 + 2]) + "), CPU=(" + std::to_string(expectedProjections[i * 3]) + "," + std::to_string(expectedProjections[i * 3 + 1]) + "," + std::to_string(expectedProjections[i * 3 + 2]) + "), GPU=(" + std::to_string(actualProjections[i * 4]) + "," + std::to_string(actualProjections[i * 4 + 1]) + "," + std::to_string(actualProjections[i * 4 + 2]) + "), errors=(" + std::to_string(xError) + "," + std::to_string(yError) + "," + std::to_string(depthError) + ").\n");
+				cleanup();
+				return false;
+			}
+		}
+		for (uint32_t i = 0; i < kSampleCount; ++i)
+		{
+			if (expectedValidity[i] != 0)
+			{
+				UIUtility::Print("ProjectPoint case " + std::to_string(i) + ", camera=" + std::to_string(cameraIndices[i]) + ", point=(" + std::to_string(worldPoints[i * 4]) + "," + std::to_string(worldPoints[i * 4 + 1]) + "," + std::to_string(worldPoints[i * 4 + 2]) + "), CPU valid=true projection=(" + std::to_string(expectedProjections[i * 3]) + "," + std::to_string(expectedProjections[i * 3 + 1]) + "," + std::to_string(expectedProjections[i * 3 + 2]) + "), GPU valid=true projection=(" + std::to_string(actualProjections[i * 4]) + "," + std::to_string(actualProjections[i * 4 + 1]) + "," + std::to_string(actualProjections[i * 4 + 2]) + ").\n");
+			}
+			else
+			{
+				UIUtility::Print("ProjectPoint case " + std::to_string(i) + ", camera=" + std::to_string(cameraIndices[i]) + ", point=(" + std::to_string(worldPoints[i * 4]) + "," + std::to_string(worldPoints[i * 4 + 1]) + "," + std::to_string(worldPoints[i * 4 + 2]) + "), CPU valid=false depth=" + std::to_string(expectedProjections[i * 3 + 2]) + ", GPU valid=false depth=" + std::to_string(actualProjections[i * 4 + 2]) + ".\n");
+			}
+		}
+		UIUtility::Print("PlaneSweep GPU ProjectPoint smoke test succeeded:\n16 / 16 validity results matched CPU ProjectPoint.\n" + std::to_string(validCount) + " / " + std::to_string(validCount) + " valid projected points matched.\nMaximum projected-X absolute error: " + std::to_string(maximumXError) + "\nMaximum projected-Y absolute error: " + std::to_string(maximumYError) + "\nMaximum depth absolute error: " + std::to_string(maximumDepthError) + "\n");
+		if (outOfImageValidCase) UIUtility::Print("ProjectPoint out-of-image validity semantics confirmed.\n");
+		cleanup();
+		return true;
+	}
+	catch (const std::exception &ex)
+	{
+		cleanup();
+		UIUtility::Print(std::string("PlaneSweep GPU ProjectPoint smoke test failed: ") + ex.what() + "\n");
+		return false;
+	}
+}
+
 void PlaneSweepGpu::Clean(void)
 {
 	if (!m_initialized)
