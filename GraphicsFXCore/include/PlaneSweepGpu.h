@@ -10,6 +10,31 @@
 
 namespace graphicsFX
 {
+	struct PlaneSweepRealComparisonStats
+	{
+		std::size_t m_totalDepthEntries{ 0 };
+		std::size_t m_meaningfulSamples{ 0 };
+		std::size_t m_cpuAccepted{ 0 };
+		std::size_t m_gpuAccepted{ 0 };
+		std::size_t m_bothInvalid{ 0 };
+		std::size_t m_cpuOnlyValid{ 0 };
+		std::size_t m_gpuOnlyValid{ 0 };
+		std::size_t m_samePlanePositive{ 0 };
+		std::size_t m_differentPlane{ 0 };
+		std::size_t m_unsampledEntries{ 0 };
+		std::size_t m_unsampledZeroMatches{ 0 };
+		std::size_t m_gpuNonFinite{ 0 };
+		std::size_t m_classificationMismatches{ 0 };
+		double m_maximumAbsoluteError{ 0.0 };
+		double m_maximumRelativeError{ 0.0 };
+		double m_meanAbsoluteError{ 0.0 };
+		double m_uploadSetupMilliseconds{ 0.0 };
+		double m_dispatchMilliseconds{ 0.0 };
+		double m_readbackComparisonMilliseconds{ 0.0 };
+		double m_cpuBuildMilliseconds{ 0.0 };
+		bool m_succeeded{ false };
+	};
+
 	struct TextureData;
 	struct GpuCameraIntrinsics;
 	struct GpuCameraPose;
@@ -103,7 +128,9 @@ namespace graphicsFX
 			std::size_t cpuPointCandidateCount,
 			const ColmapPlaneSweepResult &cpuCounters,
 			std::size_t referenceReconstructionIndex,
-			double cpuBuildMilliseconds
+			double cpuBuildMilliseconds,
+			PlaneSweepRealComparisonStats *stats = nullptr,
+			uint32_t bucketIndex = 0
 		);
 		bool RunTextureStdDevSmokeTest(
 			const std::vector<std::vector<uint8_t>> &casePixels,

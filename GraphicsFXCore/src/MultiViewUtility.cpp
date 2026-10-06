@@ -3517,7 +3517,10 @@ namespace graphicsFX
                 }
                 UIUtility::Print("PlaneSweep GPU texture-rejection smoke test succeeded:\n6 / 6 legacy texture-standard-deviation validity results matched CPU.\n" + std::to_string(directValidCount) + " / " + std::to_string(directValidCount) + " valid direct stdDev values matched CPU (six-sample cancellation logged separately).\n" + std::to_string(matchedScenarios) + " / 5 texture-rejection depth-map scenarios matched CPU BuildReferencePoints.\n" + std::to_string(totalDepthEntries) + " / 125 depth-buffer entries matched.\n" + std::to_string(matchedTextureCounts) + " / 5 texture-rejection counts matched CPU.\n" + std::to_string(matchedAcceptedCounts) + " / 5 accepted-depth counts matched CPU.\nStrict texture threshold '<' semantics confirmed.\nReference-alpha rejection occurs before texture rejection.\nMaximum ordinary texture-standard-deviation absolute error: " + std::to_string(maximumTextureStdDevError) + "\nMaximum positive-depth absolute error: " + std::to_string(maximumPositiveDepthError) + "\n");
             }
-            static bool realDepthMapComparisonAttempted = false;
+            std::array<bool, 5> comparedBuckets{};
+            std::array<std::string, 5> bucketSummary{};
+                std::vector<std::pair<std::size_t, PlaneSweepRealComparisonStats>> comparisonStats;
+            bool phase2PComparisonFailed = false;
             // Keep the legacy multi-source smoke-test handoff disabled.
             static bool multiSourceCostTestAttempted = true;
             if (runLegacySyntheticSmokeTests && planeSweepGpuPtr != nullptr && !multiSourceCostTestAttempted)
@@ -3689,14 +3692,29 @@ namespace graphicsFX
 
             //Resolves the reference and source camera sampling requirements.
             const std::size_t referenceStep = static_cast<std::size_t>(std::max(1, setup.m_planeSweepReferenceStep));
+            const std::size_t referenceCount = colmapData.m_cameras.empty() ? 0 : (colmapData.m_cameras.size() + referenceStep - 1) / referenceStep;
+            const auto getBucketIndex = [referenceCount](std::size_t index)
+            {
+                std::size_t bucket = 0;
+                if (referenceCount == 0) return bucket;
+                const std::size_t quotient = referenceCount / 5, remainder = referenceCount % 5;
+                for (std::size_t candidate = 1; candidate < 5; ++candidate)
+                {
+                    const std::size_t threshold = quotient * candidate + (remainder * candidate + 4) / 5;
+                    if (index < threshold) break;
+                    bucket = candidate;
+                }
+                return bucket;
+            };
             const std::size_t requestedSourceCount = static_cast<std::size_t>(std::max(1, setup.m_planeSweepSourceCount));
             const std::size_t requiredSourceCount = std::min(requestedSourceCount, static_cast<std::size_t>(std::max(1, setup.m_planeSweepMinValidSourceViews)));
             std::vector<MultiViewPlaneSweepUtility::PlaneSweepDepthMap> depthMaps;
             std::vector<MultiViewPlaneSweepUtility::PlaneSweepPointCandidate> pointCandidates;
 
             //Processes each sampled camera as a plane-sweep reference view.
-            for (std::size_t referenceCameraIndex = 0U; referenceCameraIndex < colmapData.m_cameras.size(); referenceCameraIndex += referenceStep)
+            for (std::size_t reconstructionIndex = 0, referenceCameraIndex = 0U; referenceCameraIndex < colmapData.m_cameras.size(); ++reconstructionIndex, referenceCameraIndex += referenceStep)
             {
+                const std::size_t bucketIndex = getBucketIndex(reconstructionIndex);
                 MultiViewPlaneSweepUtility::PlaneSweepImage referenceImage;
                 if (!MultiViewPlaneSweepUtility::LoadPlaneSweepImage(colmapData, setup, imageFiles, maskFiles, referenceCameraIndex, referenceImage))
                 {
@@ -3733,6 +3751,10 @@ namespace graphicsFX
 
                 if (sourceImages.size() < requiredSourceCount)
                 {
+                    if (planeSweepGpuPtr != nullptr && !phase2PComparisonFailed && !comparedBuckets[bucketIndex])
+                    {
+                        UIUtility::Print("Phase 2P-B bucket " + std::to_string(bucketIndex) + " skipped reference " + std::to_string(reconstructionIndex) + ": sourceCount=" + std::to_string(sourceImages.size()) + ", GPU maximum=8; normal CPU source requirement=" + std::to_string(requiredSourceCount) + " was not met, so no raw CPU depth map was produced.\n");
+                    }
                     ++result.m_camerasSkipped;
                     continue;
                 }
@@ -3810,20 +3832,20 @@ namespace graphicsFX
                 }
                 const auto brEnd = std::chrono::steady_clock::now();
                 const double cpuBuildMilliseconds = std::chrono::duration<double, std::milli>(brEnd - brStart).count();
-                if (planeSweepGpuPtr != nullptr && !realDepthMapComparisonAttempted)
+                if (planeSweepGpuPtr != nullptr && !phase2PComparisonFailed && !comparedBuckets[bucketIndex] && sourceImages.size() > MAX_PLANE_SWEEP_SOURCE_IMAGES)
                 {
-                    if (sourceImages.empty() || sourceImages.size() > MAX_PLANE_SWEEP_SOURCE_IMAGES)
-                    {
-                        UIUtility::Print("Phase 2P skipping reference index " + std::to_string(referenceCameraIndex) + ": source count=" + std::to_string(sourceImages.size()) + ", reason=" + (sourceImages.empty() ? std::string("no source images") : std::string("source count exceeds MAX_PLANE_SWEEP_SOURCE_IMAGES=8")) + ".\n");
-                    }
-                    else
-                    {
-                        realDepthMapComparisonAttempted = true;
+                    UIUtility::Print("Phase 2P-B bucket " + std::to_string(bucketIndex) + " skipped reference " + std::to_string(reconstructionIndex) + ": sourceCount=" + std::to_string(sourceImages.size()) + ", GPU maximum=8.\n");
+                }
+                if (planeSweepGpuPtr != nullptr && !phase2PComparisonFailed && !comparedBuckets[bucketIndex] && !sourceImages.empty() && sourceImages.size() <= MAX_PLANE_SWEEP_SOURCE_IMAGES)
+                {
+                        comparedBuckets[bucketIndex] = true;
                         const uint32_t scaledWidth = std::max(1U, static_cast<uint32_t>(std::lround(static_cast<float>(referenceImage.m_texture.m_width) * setup.m_planeSweepImageScale)));
                         const uint32_t scaledHeight = std::max(1U, static_cast<uint32_t>(std::lround(static_cast<float>(referenceImage.m_texture.m_height) * setup.m_planeSweepImageScale)));
                         if (scaledWidth != depthMap.m_width || scaledHeight != depthMap.m_height)
                         {
                             UIUtility::Print("Phase 2P stopped before GPU dispatch: production scaled dimensions=" + std::to_string(scaledWidth) + "x" + std::to_string(scaledHeight) + ", CPU depth map=" + std::to_string(depthMap.m_width) + "x" + std::to_string(depthMap.m_height) + ".\n");
+                            bucketSummary[bucketIndex] = "reference=" + std::to_string(referenceImage.m_camera.m_imageId) + " " + referenceImage.m_camera.m_name + " (dimension validation failed)";
+                            phase2PComparisonFailed = true;
                         }
                         else
                         {
@@ -3847,9 +3869,21 @@ namespace graphicsFX
                         const size_t confidenceRejectedCount = result.m_pointsRejectedConfidence - confidenceRejectedBeforeBuild;
                         ColmapPlaneSweepResult localCounters{}; localCounters.m_pointsRejectedTexture = textureRejectedCount; localCounters.m_pointsRejectedConfidence = confidenceRejectedCount;
                         UIUtility::Print("Phase 2P CPU BuildReferencePoints candidate count=" + std::to_string(pointCandidateCount) + ", texture rejected=" + std::to_string(textureRejectedCount) + ", confidence rejected=" + std::to_string(confidenceRejectedCount) + ".\n");
-                        planeSweepGpuPtr->CompareRealDepthMap(referenceImage, sourceImages, setup, params, depthRange, depthMap, pointCandidates, pointCandidateCount, localCounters, referenceCameraIndex, cpuBuildMilliseconds);
-                        UIUtility::Print("Phase 2P compared one real reference; later references will not be GPU-compared. CPU depth map and candidates remain authoritative.\n");
+                        PlaneSweepRealComparisonStats stats{};
+                        bool comparisonSucceeded = false;
+                        try
+                        {
+                            comparisonSucceeded = planeSweepGpuPtr->CompareRealDepthMap(referenceImage, sourceImages, setup, params, depthRange, depthMap, pointCandidates, pointCandidateCount, localCounters, reconstructionIndex, cpuBuildMilliseconds, &stats, static_cast<uint32_t>(bucketIndex));
                         }
+                        catch (const std::exception &ex)
+                        {
+                            UIUtility::Print("Phase 2P-B comparison failed for bucket " + std::to_string(bucketIndex) + ", reference " + std::to_string(referenceImage.m_camera.m_imageId) + " " + referenceImage.m_camera.m_name + ": " + ex.what() + ".\n");
+                            stats.m_cpuBuildMilliseconds = cpuBuildMilliseconds;
+                            stats.m_succeeded = false;
+                        }
+                        bucketSummary[bucketIndex] = "reference=" + std::to_string(referenceImage.m_camera.m_imageId) + " " + referenceImage.m_camera.m_name + " (reconstruction index " + std::to_string(reconstructionIndex) + ")";
+                        comparisonStats.emplace_back(bucketIndex, stats);
+                        if (!comparisonSucceeded) phase2PComparisonFailed = true;
                     }
                 }
 
@@ -3859,9 +3893,47 @@ namespace graphicsFX
                 }
             }
 
-            if (planeSweepGpuPtr != nullptr && !realDepthMapComparisonAttempted)
+            if (planeSweepGpuPtr != nullptr)
             {
-                UIUtility::Print("Phase 2P stopped: no real reference completed BuildReferencePoints with 1..8 source images; no GPU comparison was dispatched.\n");
+                for (std::size_t bucket = 0; bucket < comparedBuckets.size(); ++bucket)
+                {
+                    if (bucketSummary[bucket].empty()) UIUtility::Print("Phase 2P-B bucket " + std::to_string(bucket) + ": no eligible reference" + (phase2PComparisonFailed ? " (comparison not attempted after an earlier failure)" : "") + ".\n");
+                    else UIUtility::Print("Phase 2P-B bucket " + std::to_string(bucket) + ": " + bucketSummary[bucket] + "\n");
+                }
+                std::size_t totalDepthEntries = 0, totalMeaningfulSamples = 0, totalCpuAccepted = 0, totalGpuAccepted = 0, totalBothInvalid = 0, totalSamePlane = 0, totalClassificationMismatches = 0, totalDifferentPlane = 0, totalUnsampled = 0, totalUnsampledZero = 0, totalGpuNonFinite = 0;
+                double globalMaxAbs = 0.0, globalMaxRel = 0.0, cpuTimeSum = 0.0, dispatchTimeSum = 0.0, gpuTotalTimeSum = 0.0;
+                double cpuTimeMin = std::numeric_limits<double>::max(), cpuTimeMax = 0.0, dispatchTimeMin = std::numeric_limits<double>::max(), dispatchTimeMax = 0.0, gpuTotalTimeMin = std::numeric_limits<double>::max(), gpuTotalTimeMax = 0.0;
+                double gpuUploadTimeSum = 0.0, gpuReadbackTimeSum = 0.0;
+                std::size_t successfulReferences = 0;
+                std::vector<std::size_t> coveredBuckets;
+                for (std::size_t i = 0; i < comparisonStats.size(); ++i)
+                {
+                    const auto &stats = comparisonStats[i].second;
+                    totalDepthEntries += stats.m_totalDepthEntries; totalMeaningfulSamples += stats.m_meaningfulSamples; totalCpuAccepted += stats.m_cpuAccepted; totalGpuAccepted += stats.m_gpuAccepted;
+                    totalBothInvalid += stats.m_bothInvalid; totalSamePlane += stats.m_samePlanePositive; totalClassificationMismatches += stats.m_classificationMismatches;
+                    totalDifferentPlane += stats.m_differentPlane; totalUnsampled += stats.m_unsampledEntries; totalUnsampledZero += stats.m_unsampledZeroMatches; totalGpuNonFinite += stats.m_gpuNonFinite;
+                    globalMaxAbs = std::max(globalMaxAbs, stats.m_maximumAbsoluteError); globalMaxRel = std::max(globalMaxRel, stats.m_maximumRelativeError);
+                    const double gpuTotal = stats.m_uploadSetupMilliseconds + stats.m_dispatchMilliseconds + stats.m_readbackComparisonMilliseconds;
+                    cpuTimeSum += stats.m_cpuBuildMilliseconds; dispatchTimeSum += stats.m_dispatchMilliseconds; gpuTotalTimeSum += gpuTotal; gpuUploadTimeSum += stats.m_uploadSetupMilliseconds; gpuReadbackTimeSum += stats.m_readbackComparisonMilliseconds;
+                    cpuTimeMin = std::min(cpuTimeMin, stats.m_cpuBuildMilliseconds); cpuTimeMax = std::max(cpuTimeMax, stats.m_cpuBuildMilliseconds);
+                    dispatchTimeMin = std::min(dispatchTimeMin, stats.m_dispatchMilliseconds); dispatchTimeMax = std::max(dispatchTimeMax, stats.m_dispatchMilliseconds);
+                    gpuTotalTimeMin = std::min(gpuTotalTimeMin, gpuTotal); gpuTotalTimeMax = std::max(gpuTotalTimeMax, gpuTotal);
+                    if (stats.m_succeeded) { ++successfulReferences; coveredBuckets.push_back(comparisonStats[i].first); }
+                }
+                if (!comparisonStats.empty())
+                {
+                    std::ostringstream aggregate; aggregate.precision(9);
+                    aggregate << "Phase 2P-B aggregate validation statistics:\nReferences compared: " << comparisonStats.size() << "\nTotal depth entries: " << totalDepthEntries << "\nTotal meaningful samples: " << totalMeaningfulSamples << "\nBoth invalid: " << totalBothInvalid << "\nTotal classification mismatches: " << totalClassificationMismatches << "\nTotal different-plane selections: " << totalDifferentPlane << "\nGPU non-finite depths: " << totalGpuNonFinite << "\nCPU accepted depths total: " << totalCpuAccepted << "\nGPU accepted depths total: " << totalGpuAccepted << "\nSame-plane positive depths: " << totalSamePlane << "\nUnsampled entries matched zero: " << totalUnsampledZero << " / " << totalUnsampled << "\nGlobal maximum absolute depth error: " << globalMaxAbs << "\nGlobal maximum relative depth error: " << globalMaxRel << "\nAverage CPU BuildReferencePoints time: " << cpuTimeSum / comparisonStats.size() << " ms (range " << cpuTimeMin << ".." << cpuTimeMax << ")\nAverage GPU dispatch+fence time: " << dispatchTimeSum / comparisonStats.size() << " ms (range " << dispatchTimeMin << ".." << dispatchTimeMax << ")\nAverage GPU validation total: " << gpuTotalTimeSum / comparisonStats.size() << " ms (range " << gpuTotalTimeMin << ".." << gpuTotalTimeMax << ")\nBuckets covered:";
+                    for (const auto bucket : coveredBuckets) aggregate << " " << bucket;
+                    aggregate << "\nAverage GPU upload/resource setup: " << gpuUploadTimeSum / comparisonStats.size() << " ms; average GPU readback/comparison: " << gpuReadbackTimeSum / comparisonStats.size() << " ms\nVulkan validation errors: see runtime validation output; no error counter is available in this path.\n";
+                    if (!phase2PComparisonFailed && successfulReferences >= 3) aggregate << "PlaneSweep GPU Phase 2P-B multi-reference real-data validation succeeded.\n";
+                    else if (phase2PComparisonFailed) aggregate << "PlaneSweep GPU Phase 2P-B failed and stopped at the first failed comparison.\n";
+                    else aggregate << "PlaneSweep GPU Phase 2P-B insufficient coverage: " << successfulReferences << " successful distributed comparisons; at least 3 required.\n";
+                    aggregate << "CPU reconstruction remained authoritative.\n";
+                    UIUtility::Print(aggregate.str());
+                }
+                else if (phase2PComparisonFailed) UIUtility::Print("Phase 2P-B stopped after an eligible reference comparison could not complete; CPU reconstruction remained authoritative.\n");
+                else UIUtility::Print("Phase 2P-B insufficient coverage: no eligible references produced raw CPU depth maps in the scheduled buckets.\n");
             }
 
             if (metricsPtr)
