@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <array>
 
+#include "MultiViewUtility.h"
+
 namespace graphicsFX
 {
 	struct TextureData;
@@ -89,6 +91,19 @@ namespace graphicsFX
 			uint32_t expectedCandidateCount = UINT32_MAX,
 			float *maximumTextureStdDevError = nullptr,
 			float *maximumPositiveDepthError = nullptr
+		);
+		bool CompareRealDepthMap(
+			const MultiViewUtility::MultiViewPlaneSweepUtility::PlaneSweepImage &referenceImage,
+			const std::vector<MultiViewUtility::MultiViewPlaneSweepUtility::PlaneSweepImage> &sourceImages,
+			const ColmapSetup &setup,
+			const PlaneSweepGpuParams &params,
+			const MultiViewUtility::MultiViewPlaneSweepUtility::PlaneSweepDepthRange &depthRange,
+			const MultiViewUtility::MultiViewPlaneSweepUtility::PlaneSweepDepthMap &cpuDepthMap,
+			const std::vector<MultiViewUtility::MultiViewPlaneSweepUtility::PlaneSweepPointCandidate> &cpuPointCandidates,
+			std::size_t cpuPointCandidateCount,
+			const ColmapPlaneSweepResult &cpuCounters,
+			std::size_t referenceReconstructionIndex,
+			double cpuBuildMilliseconds
 		);
 		bool RunTextureStdDevSmokeTest(
 			const std::vector<std::vector<uint8_t>> &casePixels,

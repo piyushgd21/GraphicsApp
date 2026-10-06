@@ -1,0 +1,22 @@
+# ninja log v7
+55	1699	8130198338930847	CMakeFiles/GraphicsFXCore.dir/GraphicsFXCore/src/InputUtility.cpp.obj	55e9311df9fb99f8
+137	1703	8130198339750899	CMakeFiles/GraphicsFXCore.dir/GraphicsFXCore/src/WindowsUtility.cpp.obj	4d48e38eacd136cd
+145	1708	8130198339825932	CMakeFiles/GraphicsFXCore.dir/GraphicsFXCore/src/Window.cpp.obj	9a7d4f3f816943f8
+7	1754	8130198338455598	CMakeFiles/GraphicsFXCore.dir/GraphicsFXCore/src/Camera.cpp.obj	f97b4e9ca9f34490
+111	1893	8130198339490817	CMakeFiles/GraphicsFXCore.dir/GraphicsFXCore/src/StringUtility.cpp.obj	b83be9fe2199fea1
+40	1980	8130198338775674	CMakeFiles/GraphicsFXCore.dir/GraphicsFXCore/src/GraphicsUtility.cpp.obj	9a0a18d6f9a4035c
+25	2070	8130198338635643	CMakeFiles/GraphicsFXCore.dir/GraphicsFXCore/src/GaussianSplatStreamLoader.cpp.obj	3e22ff2495288c4d
+79	2078	8130198339170816	CMakeFiles/GraphicsFXCore.dir/GraphicsFXCore/src/PathUtility.cpp.obj	91969b4f2f587256
+33	2141	8130198338705705	CMakeFiles/GraphicsFXCore.dir/GraphicsFXCore/src/GaussianSplatUtility.cpp.obj	9dba953754bc5b75
+95	2156	8130198339330819	CMakeFiles/GraphicsFXCore.dir/GraphicsFXCore/src/SetupUtility.cpp.obj	acec987b5eb823c3
+119	2235	8130198339570814	CMakeFiles/GraphicsFXCore.dir/GraphicsFXCore/src/TextureUtility.cpp.obj	d76dab08e7085786
+88	2276	8130198339260819	CMakeFiles/GraphicsFXCore.dir/GraphicsFXCore/src/SceneObject.cpp.obj	f60d81b9ada9f9da
+129	2280	8130198339670837	CMakeFiles/GraphicsFXCore.dir/GraphicsFXCore/src/UIUtility.cpp.obj	3569240360bca3a5
+104	2307	8130198339420818	CMakeFiles/GraphicsFXCore.dir/GraphicsFXCore/src/ShaderUtility.cpp.obj	e8ebef808a780983
+152	2381	8130198339905989	CMakeFiles/GraphicsApp00.dir/GraphicsApp00/src/WinMain.cpp.obj	4a1db7249c2818ba
+71	2407	8130198339090820	CMakeFiles/GraphicsFXCore.dir/GraphicsFXCore/src/OpenXRUtility.cpp.obj	b486684591a9a348
+19	2457	8130198338565600	CMakeFiles/GraphicsFXCore.dir/GraphicsFXCore/src/EngineCore.cpp.obj	27dc97e1e6ff6879
+161	2574	8130198339986013	CMakeFiles/GraphicsApp00.dir/GraphicsApp00/src/Scene.cpp.obj	38da91946b8b8d0e
+47	2763	8130198338850853	CMakeFiles/GraphicsFXCore.dir/GraphicsFXCore/src/PlaneSweepGpu.cpp.obj	4d35812e6626365
+63	3144	8130198339010822	CMakeFiles/GraphicsFXCore.dir/GraphicsFXCore/src/MultiViewUtility.cpp.obj	b693b9345c071e30
+3145	3388	8130198369832270	GraphicsFXCore.lib	f433b2da88ad989b

@@ -3332,8 +3332,9 @@ namespace graphicsFX
             {
                 UIUtility::Print("BuildColmapPlaneSweepPointCloud received PlaneSweepGpu handoff.\n");
             }
+            static constexpr bool runLegacySyntheticSmokeTests = false;
             static bool textureRejectionTestAttempted = false;
-            if (planeSweepGpuPtr != nullptr && !textureRejectionTestAttempted)
+            if (runLegacySyntheticSmokeTests && planeSweepGpuPtr != nullptr && !textureRejectionTestAttempted)
             {
                 textureRejectionTestAttempted = true;
                 using PlaneSweepImage = MultiViewPlaneSweepUtility::PlaneSweepImage;
@@ -3475,7 +3476,7 @@ namespace graphicsFX
                     }
                     PlaneSweepGpuParams gpuParams{}; gpuParams.m_inverseNear = 1.0f; gpuParams.m_inverseFar = 0.25f; gpuParams.m_planeCount = 4; gpuParams.m_patchRadius = 1; gpuParams.m_minValidSourceViews = 1; gpuParams.m_alphaThreshold = 0.5f; gpuParams.m_minimumOpaquePatchRatio = 0.4f; gpuParams.m_costThreshold = 1.0f; gpuParams.m_textureMinimumStdDev = scenario.minimumStdDev; gpuParams.m_sourceCount = 1; gpuParams.m_textureRejectionEnabled = 1; gpuParams.m_confidenceEnabled = 0; gpuParams.m_pointStep = 2; gpuParams.m_scaledWidth = 5; gpuParams.m_scaledHeight = 5;
                     constexpr uint32_t statusReferenceRejected = 4u, statusTextureRejected = 5u, statusAccepted = 3u, statusNoValidPlane = 0u;
-                    std::vector<uint32_t> sourceMetadata(16, 0), expectedMappings, expectedStatuses; std::vector<float> expectedStdDevs; std::vector<uint32_t> expectedSampleCounts;
+                    std::vector<uint32_t> sourceMetadata(18, 0), expectedMappings, expectedStatuses; std::vector<float> expectedStdDevs; std::vector<uint32_t> expectedSampleCounts;
                     uint32_t referenceRejected = 0;
                     for (uint32_t sy = 0; sy < 5; sy += 2) for (uint32_t sx = 0; sx < 5; sx += 2)
                     {
@@ -3516,9 +3517,10 @@ namespace graphicsFX
                 }
                 UIUtility::Print("PlaneSweep GPU texture-rejection smoke test succeeded:\n6 / 6 legacy texture-standard-deviation validity results matched CPU.\n" + std::to_string(directValidCount) + " / " + std::to_string(directValidCount) + " valid direct stdDev values matched CPU (six-sample cancellation logged separately).\n" + std::to_string(matchedScenarios) + " / 5 texture-rejection depth-map scenarios matched CPU BuildReferencePoints.\n" + std::to_string(totalDepthEntries) + " / 125 depth-buffer entries matched.\n" + std::to_string(matchedTextureCounts) + " / 5 texture-rejection counts matched CPU.\n" + std::to_string(matchedAcceptedCounts) + " / 5 accepted-depth counts matched CPU.\nStrict texture threshold '<' semantics confirmed.\nReference-alpha rejection occurs before texture rejection.\nMaximum ordinary texture-standard-deviation absolute error: " + std::to_string(maximumTextureStdDevError) + "\nMaximum positive-depth absolute error: " + std::to_string(maximumPositiveDepthError) + "\n");
             }
+            static bool realDepthMapComparisonAttempted = false;
             // Keep the legacy multi-source smoke-test handoff disabled.
             static bool multiSourceCostTestAttempted = true;
-            if (planeSweepGpuPtr != nullptr && !multiSourceCostTestAttempted)
+            if (runLegacySyntheticSmokeTests && planeSweepGpuPtr != nullptr && !multiSourceCostTestAttempted)
             {
                 multiSourceCostTestAttempted = true;
                 using PlaneSweepImage = MultiViewPlaneSweepUtility::PlaneSweepImage;
@@ -3656,7 +3658,7 @@ namespace graphicsFX
                 gpuParams.m_pointStep = static_cast<uint32_t>(controlledSetup.m_planeSweepPointStep);
                 gpuParams.m_scaledWidth = cpuDepthMap.m_width;
                 gpuParams.m_scaledHeight = cpuDepthMap.m_height;
-                std::vector<uint32_t> sourceMetadata(16, 0);
+                std::vector<uint32_t> sourceMetadata(18, 0);
                 planeSweepGpuPtr->RunDepthMapSmokeTest(referenceImage.m_texture.m_pixels, sourceImage.m_texture.m_pixels, gpuIntrinsics, gpuPoses, gpuParams, sourceMetadata, cpuDepthMap.m_depthValues, expectedMappings, expectedStatuses);
             }
 
@@ -3773,9 +3775,12 @@ namespace graphicsFX
                 //Builds plane sweep points for one reference image.
                 MultiViewPlaneSweepUtility::PlaneSweepDepthMap depthMap;
                 const std::size_t depthMapIndex = depthMaps.size();
+                const std::size_t candidatesBeforeBuild = pointCandidates.size();
+                const std::size_t textureRejectedBeforeBuild = result.m_pointsRejectedTexture;
+                const std::size_t confidenceRejectedBeforeBuild = result.m_pointsRejectedConfidence;
+                const auto brStart = std::chrono::steady_clock::now();
                 if (metricsPtr)
                 {
-                    const auto brStart = std::chrono::steady_clock::now();
                     MultiViewPlaneSweepUtility::BuildReferencePoints(
                         setup,
                         referenceImage,
@@ -3803,11 +3808,60 @@ namespace graphicsFX
                         result
                     );
                 }
+                const auto brEnd = std::chrono::steady_clock::now();
+                const double cpuBuildMilliseconds = std::chrono::duration<double, std::milli>(brEnd - brStart).count();
+                if (planeSweepGpuPtr != nullptr && !realDepthMapComparisonAttempted)
+                {
+                    if (sourceImages.empty() || sourceImages.size() > MAX_PLANE_SWEEP_SOURCE_IMAGES)
+                    {
+                        UIUtility::Print("Phase 2P skipping reference index " + std::to_string(referenceCameraIndex) + ": source count=" + std::to_string(sourceImages.size()) + ", reason=" + (sourceImages.empty() ? std::string("no source images") : std::string("source count exceeds MAX_PLANE_SWEEP_SOURCE_IMAGES=8")) + ".\n");
+                    }
+                    else
+                    {
+                        realDepthMapComparisonAttempted = true;
+                        const uint32_t scaledWidth = std::max(1U, static_cast<uint32_t>(std::lround(static_cast<float>(referenceImage.m_texture.m_width) * setup.m_planeSweepImageScale)));
+                        const uint32_t scaledHeight = std::max(1U, static_cast<uint32_t>(std::lround(static_cast<float>(referenceImage.m_texture.m_height) * setup.m_planeSweepImageScale)));
+                        if (scaledWidth != depthMap.m_width || scaledHeight != depthMap.m_height)
+                        {
+                            UIUtility::Print("Phase 2P stopped before GPU dispatch: production scaled dimensions=" + std::to_string(scaledWidth) + "x" + std::to_string(scaledHeight) + ", CPU depth map=" + std::to_string(depthMap.m_width) + "x" + std::to_string(depthMap.m_height) + ".\n");
+                        }
+                        else
+                        {
+                            const int pointStep = std::max(1, setup.m_planeSweepPointStep);
+                        const int planeCount = std::max(2, setup.m_planeSweepPlaneCount);
+                        const int patchRadius = std::max(0, setup.m_planeSweepPatchRadius);
+                        const float inverseNear = 1.0f / std::max(depthRange.m_nearDepth, 0.0001f);
+                        const float inverseFar = 1.0f / std::max(depthRange.m_farDepth, depthRange.m_nearDepth + 0.0001f);
+                        PlaneSweepGpuParams params{};
+                        params.m_inverseNear = inverseNear; params.m_inverseFar = inverseFar; params.m_planeCount = planeCount; params.m_patchRadius = patchRadius;
+                        params.m_minValidSourceViews = std::max(1, std::min(static_cast<int>(sourceImages.size()), setup.m_planeSweepMinValidSourceViews));
+                        params.m_alphaThreshold = std::clamp(setup.m_planeSweepAlphaThreshold, 0.0f, 1.0f);
+                        params.m_minimumOpaquePatchRatio = std::clamp(setup.m_planeSweepMinimumOpaquePatchRatio, 0.0f, 1.0f);
+                        params.m_costThreshold = setup.m_planeSweepCostThreshold;
+                        params.m_confidenceMinimumDifference = std::max(0.0f, setup.m_planeSweepConfidenceMinimumDifference);
+                        params.m_textureMinimumStdDev = std::max(0.0f, setup.m_planeSweepTextureMinimumStdDev);
+                        params.m_sourceCount = static_cast<uint32_t>(sourceImages.size()); params.m_textureRejectionEnabled = setup.m_planeSweepTextureRejectionEnabled ? 1u : 0u;
+                        params.m_confidenceEnabled = setup.m_planeSweepConfidenceEnabled ? 1u : 0u; params.m_pointStep = static_cast<uint32_t>(pointStep); params.m_scaledWidth = scaledWidth; params.m_scaledHeight = scaledHeight;
+                        const size_t pointCandidateCount = pointCandidates.size() - candidatesBeforeBuild;
+                        const size_t textureRejectedCount = result.m_pointsRejectedTexture - textureRejectedBeforeBuild;
+                        const size_t confidenceRejectedCount = result.m_pointsRejectedConfidence - confidenceRejectedBeforeBuild;
+                        ColmapPlaneSweepResult localCounters{}; localCounters.m_pointsRejectedTexture = textureRejectedCount; localCounters.m_pointsRejectedConfidence = confidenceRejectedCount;
+                        UIUtility::Print("Phase 2P CPU BuildReferencePoints candidate count=" + std::to_string(pointCandidateCount) + ", texture rejected=" + std::to_string(textureRejectedCount) + ", confidence rejected=" + std::to_string(confidenceRejectedCount) + ".\n");
+                        planeSweepGpuPtr->CompareRealDepthMap(referenceImage, sourceImages, setup, params, depthRange, depthMap, pointCandidates, pointCandidateCount, localCounters, referenceCameraIndex, cpuBuildMilliseconds);
+                        UIUtility::Print("Phase 2P compared one real reference; later references will not be GPU-compared. CPU depth map and candidates remain authoritative.\n");
+                        }
+                    }
+                }
 
                 if (setup.m_planeSweepCrossViewConsistencyEnabled)
                 {
                     depthMaps.push_back(std::move(depthMap));
                 }
+            }
+
+            if (planeSweepGpuPtr != nullptr && !realDepthMapComparisonAttempted)
+            {
+                UIUtility::Print("Phase 2P stopped: no real reference completed BuildReferencePoints with 1..8 source images; no GPU comparison was dispatched.\n");
             }
 
             if (metricsPtr)
