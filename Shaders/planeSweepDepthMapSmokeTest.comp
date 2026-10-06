@@ -17,6 +17,10 @@ layout(set = 0, binding = 7, std430) readonly buffer SourceMetadata { uint value
 layout(set = 0, binding = 8, std430) writeonly buffer DepthOutput { float values[]; } depthOutput;
 layout(set = 0, binding = 9, std430) writeonly buffer MappingOutput { uint values[]; } mappingOutput;
 layout(set = 0, binding = 10, std430) writeonly buffer StatusOutput { uint values[]; } statusOutput;
+layout(set = 0, binding = 11, std430) writeonly buffer TextureStdDevOutput { uint values[]; } textureStdDevOutput;
+layout(set = 0, binding = 12, std430) writeonly buffer TextureSampleCountOutput { uint values[]; } textureSampleCountOutput;
+layout(set = 0, binding = 13, std430) writeonly buffer MinimumOpaqueSamplesOutput { uint values[]; } minimumOpaqueSamplesOutput;
+layout(set = 0, binding = 14, std430) writeonly buffer PlaneCostSampleCountOutput { uint values[]; } planeCostSampleCountOutput;
 
 const float kFloatMax = 3.402823466e+38;
 const uint kStatusNoValidPlane = 0u;
@@ -24,6 +28,7 @@ const uint kStatusCostRejected = 1u;
 const uint kStatusConfidenceRejected = 2u;
 const uint kStatusAccepted = 3u;
 const uint kStatusReferenceInvalid = 4u;
+const uint kStatusTextureRejected = 5u;
 
 bool IsFiniteFloat(float value) { return !isnan(value) && !isinf(value); }
 
@@ -47,6 +52,62 @@ bool SamplePlaneSweepPixelCpuEquivalent(sampler2D image, sampler2D mask, vec2 pi
 	vec2 maskPixel = vec2(pixel.x / imageWidth * maskWidth, pixel.y / imageHeight * maskHeight); vec4 maskColor;
 	if (!SampleBilinearCpuEquivalent(mask, maskPixel, maskColor)) return false;
 	color.a = maskUsesAlpha ? maskColor.a : maskColor.r * 0.299 + maskColor.g * 0.587 + maskColor.b * 0.114; return true;
+}
+
+bool ComputeTextureStandardDeviationCpuEquivalent(float x, float y, int patchRadius, float alphaThreshold, uint diagnosticIndex, out float standardDeviation, out uint acceptedSampleCount)
+{
+	precise float luminanceSum = 0.0; precise float luminanceSquaredSum = 0.0; int sampleCount = 0; uint diagnosticSampleCount = 0u;
+	for (int patchY = -patchRadius; patchY <= patchRadius; ++patchY)
+	{
+		for (int patchX = -patchRadius; patchX <= patchRadius; ++patchX)
+		{
+			vec4 color;
+			if (!SamplePlaneSweepPixelCpuEquivalent(referenceImage, referenceMask, vec2(x + float(patchX), y + float(patchY)), false, false, color)) continue;
+			if (color.a <= alphaThreshold) continue;
+			precise float redLuminance = color.r * 0.299;
+			precise float greenLuminance = color.g * 0.587;
+			precise float blueLuminance = color.b * 0.114;
+			precise float luminanceRedGreen = redLuminance + greenLuminance;
+			precise float luminance = luminanceRedGreen + blueLuminance;
+			precise float squaredLuminance = luminance * luminance;
+			luminanceSum = luminanceSum + luminance;
+			luminanceSquaredSum = luminanceSquaredSum + squaredLuminance;
+			uint diagnosticBase = diagnosticIndex * 100u + 10u + diagnosticSampleCount * 10u;
+			textureStdDevOutput.values[diagnosticBase] = floatBitsToUint(x + float(patchX));
+			textureStdDevOutput.values[diagnosticBase + 1u] = floatBitsToUint(y + float(patchY));
+			textureStdDevOutput.values[diagnosticBase + 2u] = floatBitsToUint(color.r);
+			textureStdDevOutput.values[diagnosticBase + 3u] = floatBitsToUint(color.g);
+			textureStdDevOutput.values[diagnosticBase + 4u] = floatBitsToUint(color.b);
+			textureStdDevOutput.values[diagnosticBase + 5u] = floatBitsToUint(color.a);
+			textureStdDevOutput.values[diagnosticBase + 6u] = floatBitsToUint(luminance);
+			textureStdDevOutput.values[diagnosticBase + 7u] = floatBitsToUint(squaredLuminance);
+			textureStdDevOutput.values[diagnosticBase + 8u] = floatBitsToUint(luminanceSum);
+			textureStdDevOutput.values[diagnosticBase + 9u] = floatBitsToUint(luminanceSquaredSum);
+			++diagnosticSampleCount;
+			++sampleCount;
+		}
+	}
+	acceptedSampleCount = uint(max(sampleCount, 0));
+	if (sampleCount == 0) { standardDeviation = 0.0; return false; }
+	precise float sampleCountFloat = float(sampleCount);
+	precise float mean = luminanceSum / sampleCountFloat;
+	precise float averageSquared = luminanceSquaredSum / sampleCountFloat;
+	precise float meanSquared = mean * mean;
+	precise float variance = averageSquared - meanSquared;
+	precise float clampedVariance = max(0.0, variance);
+	standardDeviation = sqrt(clampedVariance);
+	uint diagnosticBase = diagnosticIndex * 100u;
+	textureStdDevOutput.values[diagnosticBase] = uint(sampleCount);
+	textureStdDevOutput.values[diagnosticBase + 1u] = floatBitsToUint(luminanceSum);
+	textureStdDevOutput.values[diagnosticBase + 2u] = floatBitsToUint(luminanceSquaredSum);
+	textureStdDevOutput.values[diagnosticBase + 3u] = floatBitsToUint(float(sampleCount));
+	textureStdDevOutput.values[diagnosticBase + 4u] = floatBitsToUint(mean);
+	textureStdDevOutput.values[diagnosticBase + 5u] = floatBitsToUint(meanSquared);
+	textureStdDevOutput.values[diagnosticBase + 6u] = floatBitsToUint(luminanceSquaredSum / float(sampleCount));
+	textureStdDevOutput.values[diagnosticBase + 7u] = floatBitsToUint(variance);
+	textureStdDevOutput.values[diagnosticBase + 8u] = floatBitsToUint(clampedVariance);
+	textureStdDevOutput.values[diagnosticBase + 9u] = floatBitsToUint(standardDeviation);
+	return IsFiniteFloat(standardDeviation);
 }
 
 bool SampleSource(uint sourceIndex, vec2 pixel, out vec4 color)
@@ -91,19 +152,36 @@ bool ProjectPointCpuEquivalent(GpuCameraPose camera, GpuCameraIntrinsics intrins
 	x = intrinsic.fx * distortedX + intrinsic.cx; y = intrinsic.fy * distortedY + intrinsic.cy; return IsFiniteFloat(x) && IsFiniteFloat(y) && IsFiniteFloat(depth);
 }
 
-bool ComputePlaneCostCpuEquivalent(float referenceX, float referenceY, float depth, vec4 referenceColor, out float cost)
+bool ComputePlaneCostCpuEquivalent(float referenceX, float referenceY, float depth, out float cost, out uint minimumOpaqueSamples, out uint acceptedSampleCount)
 {
+	int patchWidth = paramsBuffer.value.patchRadius * 2 + 1;
+	int patchArea = patchWidth * patchWidth;
+	minimumOpaqueSamples = uint(max(1, int(ceil(float(patchArea) * paramsBuffer.value.minimumOpaquePatchRatio))));
+	acceptedSampleCount = 0u;
 	float totalCost = 0.0; int validSourceViews = 0;
 	for (uint sourceIndex = 0u; sourceIndex < paramsBuffer.value.sourceCount; ++sourceIndex)
 	{
-		float sourceCost = 0.0; int sampleCount = 0; vec3 point = UnprojectPixelCpuEquivalent(poses.values[0], intrinsics.values[0], referenceX, referenceY, depth);
-		float sourceX; float sourceY; float sourceDepth;
-		if (!ProjectPointCpuEquivalent(poses.values[sourceIndex + 1u], intrinsics.values[sourceIndex + 1u], point, sourceX, sourceY, sourceDepth)) continue;
-		vec4 sourceColor;
-		if (!SampleSource(sourceIndex, vec2(sourceX, sourceY), sourceColor) || sourceColor.a <= paramsBuffer.value.alphaThreshold) continue;
-		sourceCost += (abs(referenceColor.r - sourceColor.r) + abs(referenceColor.g - sourceColor.g) + abs(referenceColor.b - sourceColor.b)) / 3.0;
-		++sampleCount;
-		if (sampleCount >= max(1, int(ceil(float((paramsBuffer.value.patchRadius * 2 + 1) * (paramsBuffer.value.patchRadius * 2 + 1)) * paramsBuffer.value.minimumOpaquePatchRatio)))) { totalCost += sourceCost / float(sampleCount); ++validSourceViews; }
+		float sourceCost = 0.0; int sampleCount = 0;
+		for (int patchY = -paramsBuffer.value.patchRadius; patchY <= paramsBuffer.value.patchRadius; ++patchY)
+		{
+			for (int patchX = -paramsBuffer.value.patchRadius; patchX <= paramsBuffer.value.patchRadius; ++patchX)
+			{
+				float patchReferenceX = referenceX + float(patchX); float patchReferenceY = referenceY + float(patchY); vec4 patchReferenceColor;
+				if (!SamplePlaneSweepPixelCpuEquivalent(referenceImage, referenceMask, vec2(patchReferenceX, patchReferenceY), false, false, patchReferenceColor)) continue;
+				if (patchReferenceColor.a <= paramsBuffer.value.alphaThreshold) continue;
+				vec3 point = UnprojectPixelCpuEquivalent(poses.values[0], intrinsics.values[0], patchReferenceX, patchReferenceY, depth);
+				float sourceX; float sourceY; float sourceDepth;
+				if (!ProjectPointCpuEquivalent(poses.values[sourceIndex + 1u], intrinsics.values[sourceIndex + 1u], point, sourceX, sourceY, sourceDepth)) continue;
+				ivec2 sourceSize = textureSize(sourceImages[0], 0);
+				if (!(sourceX >= 0.0 && sourceY >= 0.0 && sourceX < float(sourceSize.x) && sourceY < float(sourceSize.y))) continue;
+				vec4 sourceColor;
+				if (!SampleSource(sourceIndex, vec2(sourceX, sourceY), sourceColor) || sourceColor.a <= paramsBuffer.value.alphaThreshold) continue;
+				sourceCost += (abs(patchReferenceColor.r - sourceColor.r) + abs(patchReferenceColor.g - sourceColor.g) + abs(patchReferenceColor.b - sourceColor.b)) / 3.0;
+				++sampleCount;
+			}
+		}
+		if (sourceIndex == 0u) acceptedSampleCount = uint(sampleCount);
+		if (sampleCount >= int(minimumOpaqueSamples)) { totalCost += sourceCost / float(sampleCount); ++validSourceViews; }
 	}
 	if (validSourceViews < paramsBuffer.value.minValidSourceViews) { cost = 0.0; return false; }
 	cost = totalCost / float(validSourceViews); return IsFiniteFloat(cost);
@@ -120,12 +198,30 @@ void main()
 	float referenceX = float(referenceXi); float referenceY = float(referenceYi); uint depthIndex = scaledY * params.scaledWidth + scaledX;
 	uint sampleGridWidth = (params.scaledWidth + params.pointStep - 1u) / params.pointStep;
 	uint diagnosticIndex = invocationY * sampleGridWidth + invocationX; uint status = kStatusNoValidPlane; float finalDepth = 0.0;
-	vec4 referenceColor;
+	vec4 referenceColor; float textureStandardDeviation = 0.0; uint textureSampleCount = 0u;
+	int patchWidth = params.patchRadius * 2 + 1; int patchArea = patchWidth * patchWidth;
+	uint minimumOpaqueSamples = uint(max(1, int(ceil(float(patchArea) * params.minimumOpaquePatchRatio)))); uint planeCostSampleCount = 0u;
 	if (!SamplePlaneSweepPixelCpuEquivalent(referenceImage, referenceMask, vec2(referenceX, referenceY), false, false, referenceColor) || referenceColor.a <= params.alphaThreshold)
 	{
 		status = kStatusReferenceInvalid;
 	}
+	else if (params.textureRejectionEnabled != 0u)
+	{
+		if (!ComputeTextureStandardDeviationCpuEquivalent(referenceX, referenceY, params.patchRadius, params.alphaThreshold, diagnosticIndex, textureStandardDeviation, textureSampleCount) || textureStandardDeviation < params.textureMinimumStdDev)
+		{
+			status = kStatusTextureRejected;
+		}
+		else
+		{
+			status = kStatusNoValidPlane;
+		}
+	}
 	else
+	{
+		// Keep status in the normal search-ready state when texture rejection is disabled.
+		status = kStatusNoValidPlane;
+	}
+	if (status == kStatusNoValidPlane)
 	{
 		float bestCost = kFloatMax; float secondBestCost = kFloatMax; float bestDepth = 0.0;
 		int planeCount = max(2, params.planeCount);
@@ -133,7 +229,9 @@ void main()
 		{
 			float t = planeCount <= 1 ? 0.0 : float(planeIndex) / float(planeCount - 1);
 			float inverseDepth = params.inverseNear * (1.0 - t) + params.inverseFar * t; float depth = 1.0 / max(inverseDepth, 0.000001);
-			float cost = 0.0; bool hasCost = ComputePlaneCostCpuEquivalent(referenceX, referenceY, depth, referenceColor, cost);
+			float cost = 0.0; uint planeMinimumOpaqueSamples = 0u;
+			bool hasCost = ComputePlaneCostCpuEquivalent(referenceX, referenceY, depth, cost, planeMinimumOpaqueSamples, planeCostSampleCount);
+			minimumOpaqueSamples = planeMinimumOpaqueSamples;
 			if (hasCost && cost < bestCost) { secondBestCost = bestCost; bestCost = cost; bestDepth = depth; }
 			else if (hasCost && IsFiniteFloat(cost) && cost < secondBestCost) secondBestCost = cost;
 		}
@@ -150,4 +248,8 @@ void main()
 	mappingOutput.values[base + 2u] = scaledX; mappingOutput.values[base + 3u] = scaledY;
 	mappingOutput.values[base + 4u] = referenceXi; mappingOutput.values[base + 5u] = referenceYi; mappingOutput.values[base + 6u] = depthIndex;
 	statusOutput.values[diagnosticIndex] = status;
+	if (textureSampleCount == 0u) textureStdDevOutput.values[diagnosticIndex * 100u + 9u] = floatBitsToUint(textureStandardDeviation);
+	textureSampleCountOutput.values[diagnosticIndex] = textureSampleCount;
+	minimumOpaqueSamplesOutput.values[diagnosticIndex] = minimumOpaqueSamples;
+	planeCostSampleCountOutput.values[diagnosticIndex] = planeCostSampleCount;
 }

@@ -81,7 +81,22 @@ namespace graphicsFX
 			const std::vector<uint32_t> &sourceMetadata,
 			const std::vector<float> &expectedDepthMap,
 			const std::vector<uint32_t> &expectedSampleMappings,
-			const std::vector<uint32_t> &expectedSampleStatuses
+			const std::vector<uint32_t> &expectedSampleStatuses,
+			const std::vector<float> &expectedTextureStdDevs = {},
+			const std::vector<uint32_t> &expectedTextureSampleCounts = {},
+			uint32_t expectedTextureRejectedCount = 0,
+			uint32_t expectedAcceptedCount = UINT32_MAX,
+			uint32_t expectedCandidateCount = UINT32_MAX,
+			float *maximumTextureStdDevError = nullptr,
+			float *maximumPositiveDepthError = nullptr
+		);
+		bool RunTextureStdDevSmokeTest(
+			const std::vector<std::vector<uint8_t>> &casePixels,
+			const std::vector<float> &caseParameters,
+			const std::vector<uint32_t> &expectedValidity,
+			const std::vector<float> &expectedStdDevs,
+			const std::vector<uint32_t> &expectedSampleCounts,
+			float *maximumStdDevError = nullptr
 		);
 		bool RunMultiSourceCostSmokeTest(
 			const std::vector<uint8_t> &referencePixels,

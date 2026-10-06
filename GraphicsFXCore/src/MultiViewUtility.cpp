@@ -25,12 +25,14 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <limits>
 #include <numeric>
+#include <iomanip>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -43,6 +45,14 @@
 namespace graphicsFX
 {
         // Debug run context used by ComputePlaneCost instrumentation.
+        static uint32_t FloatBits(float value)
+        {
+            uint32_t bits = 0;
+            static_assert(sizeof(bits) == sizeof(value));
+            std::memcpy(&bits, &value, sizeof(bits));
+            return bits;
+        }
+
         struct DebugRunContext
         {
             bool enabled{ false };
@@ -3322,7 +3332,192 @@ namespace graphicsFX
             {
                 UIUtility::Print("BuildColmapPlaneSweepPointCloud received PlaneSweepGpu handoff.\n");
             }
-            static bool multiSourceCostTestAttempted = false;
+            static bool textureRejectionTestAttempted = false;
+            if (planeSweepGpuPtr != nullptr && !textureRejectionTestAttempted)
+            {
+                textureRejectionTestAttempted = true;
+                using PlaneSweepImage = MultiViewPlaneSweepUtility::PlaneSweepImage;
+                constexpr uint32_t width = 5, height = 5, pixelBytes = 4;
+                auto makeImage = [](bool checkerboard, bool transparentCenter, bool allTransparent = false)
+                {
+                    PlaneSweepImage image;
+                    image.m_texture.m_width = 5; image.m_texture.m_height = 5; image.m_texture.m_channelCount = 4; image.m_texture.m_pixels.resize(5 * 5 * 4);
+                    image.m_intrinsic.m_width = 5; image.m_intrinsic.m_height = 5; image.m_intrinsic.m_fx = 4.0; image.m_intrinsic.m_fy = 4.0; image.m_intrinsic.m_cx = 2.0; image.m_intrinsic.m_cy = 2.0;
+                    image.m_camera.m_position = Float3{0.0f, 0.0f, 0.0f}; image.m_camera.m_forward = Float3{0.0f, 0.0f, 1.0f}; image.m_camera.m_up = Float3{0.0f, 1.0f, 0.0f}; image.m_camera.m_right = Float3{1.0f, 0.0f, 0.0f};
+                    for (uint32_t y = 0; y < 5; ++y) for (uint32_t x = 0; x < 5; ++x)
+                    {
+                        const size_t offset = (static_cast<size_t>(y) * 5 + x) * 4;
+                        const uint8_t value = checkerboard ? (((x + y) % 2 == 0) ? 40 : 200) : 100;
+                        image.m_texture.m_pixels[offset] = value; image.m_texture.m_pixels[offset + 1] = value; image.m_texture.m_pixels[offset + 2] = value; image.m_texture.m_pixels[offset + 3] = allTransparent || (transparentCenter && x == 2 && y == 2) ? 0 : 255;
+                    }
+                    return image;
+                };
+                auto sampleCountFor = [](const PlaneSweepImage &image, float x, float y, int radius, float alphaThreshold)
+                {
+                    uint32_t count = 0;
+                    for (int dy = -radius; dy <= radius; ++dy) for (int dx = -radius; dx <= radius; ++dx)
+                    {
+                        Float4 color;
+                        if (MultiViewPlaneSweepUtility::SamplePlaneSweepPixel(image, x + static_cast<float>(dx), y + static_cast<float>(dy), color) && color.w > alphaThreshold) ++count;
+                    }
+                    return count;
+                };
+                auto printTexturePatchDiagnostics = [&](const PlaneSweepImage &image, float x, float y, int radius, float alphaThreshold, const char *label)
+                {
+                    float luminanceSum = 0.0f, luminanceSquaredSum = 0.0f; int sampleCount = 0;
+                    auto bitsText = [](float value) { std::ostringstream text; text << "0x" << std::hex << std::setw(8) << std::setfill('0') << FloatBits(value) << std::dec; return text.str(); };
+                    UIUtility::Print(std::string(label) + " accepted texture samples:\n");
+                    for (int patchY = -radius; patchY <= radius; ++patchY) for (int patchX = -radius; patchX <= radius; ++patchX)
+                    {
+                        Float4 color;
+                        if (!MultiViewPlaneSweepUtility::SamplePlaneSweepPixel(image, x + static_cast<float>(patchX), y + static_cast<float>(patchY), color) || color.w <= alphaThreshold) continue;
+                        std::ostringstream sampleLine; sampleLine.precision(9); sampleLine << label << " sample " << sampleCount << ": coord=(" << x + static_cast<float>(patchX) << "," << y + static_cast<float>(patchY) << "), rgba=(" << color.x << "," << color.y << "," << color.z << "," << color.w << "), bits=(" << bitsText(color.x) << "," << bitsText(color.y) << "," << bitsText(color.z) << "," << bitsText(color.w) << ")\n"; UIUtility::Print(sampleLine.str());
+                        const float luminance = (color.x * 0.299f) + (color.y * 0.587f) + (color.z * 0.114f);
+                        luminanceSum += luminance; luminanceSquaredSum += luminance * luminance; ++sampleCount;
+                        std::ostringstream arithmetic; arithmetic.precision(9); arithmetic << label << " sample arithmetic " << sampleCount - 1 << ": luminance=" << luminance << " " << bitsText(luminance) << ", luminanceSquared=" << luminance * luminance << " " << bitsText(luminance * luminance) << ", runningSum=" << luminanceSum << " " << bitsText(luminanceSum) << ", runningSquaredSum=" << luminanceSquaredSum << " " << bitsText(luminanceSquaredSum) << "\n"; UIUtility::Print(arithmetic.str());
+                    }
+                    if (sampleCount == 0) return;
+                    const float mean = luminanceSum / static_cast<float>(sampleCount);
+                    const float averageSquared = luminanceSquaredSum / static_cast<float>(sampleCount);
+                    const float meanSquared = mean * mean;
+                    const float rawVariance = averageSquared - meanSquared;
+                    const float clampedVariance = std::max(0.0f, rawVariance);
+                    const float standardDeviation = std::sqrt(clampedVariance);
+                    std::ostringstream values; values.precision(9); values << label << " stdDev intermediates: acceptedSampleCount=" << sampleCount << ", luminanceSum=" << luminanceSum << " " << bitsText(luminanceSum) << ", luminanceSquaredSum=" << luminanceSquaredSum << " " << bitsText(luminanceSquaredSum) << ", sampleCountFloat=" << static_cast<float>(sampleCount) << " " << bitsText(static_cast<float>(sampleCount)) << ", mean=" << mean << " " << bitsText(mean) << ", meanSquared=" << meanSquared << " " << bitsText(meanSquared) << ", averageSquared=" << averageSquared << " " << bitsText(averageSquared) << ", rawVariance=" << rawVariance << " " << bitsText(rawVariance) << ", clampedVariance=" << clampedVariance << " " << bitsText(clampedVariance) << ", standardDeviation=" << standardDeviation << " " << bitsText(standardDeviation) << "\n"; UIUtility::Print(values.str());
+                };
+                    auto directConstant = makeImage(false, false); auto directChecker = makeImage(true, false); auto directTransparent = makeImage(false, false, true);
+                    const std::vector<PlaneSweepImage> directImages{directConstant, directConstant, directChecker, directChecker, directConstant, directTransparent, directConstant};
+                    const std::array<std::array<float, 4>, 7> directCases{{{{2,2,1,0.5f}}, {{0,0,1,0.5f}}, {{2,2,1,0.5f}}, {{0,0,1,0.5f}}, {{2,2,0,0.5f}}, {{2,2,1,0.5f}}, {{2,0,1,0.5f}}}};
+                std::vector<std::vector<uint8_t>> directPixels; std::vector<float> directParameters; std::vector<uint32_t> directValidity, directSampleCounts; std::vector<float> directStdDevs;
+                for (uint32_t i = 0; i < directImages.size(); ++i)
+                {
+                    directPixels.push_back(directImages[i].m_texture.m_pixels); directParameters.insert(directParameters.end(), directCases[i].begin(), directCases[i].end()); float stdDev = 0.0f;
+                    const bool valid = MultiViewPlaneSweepUtility::ComputeTextureStandardDeviation(directImages[i], directCases[i][0], directCases[i][1], static_cast<int>(directCases[i][2]), directCases[i][3], stdDev);
+                    directValidity.push_back(valid ? 1u : 0u); directStdDevs.push_back(stdDev); directSampleCounts.push_back(sampleCountFor(directImages[i], directCases[i][0], directCases[i][1], static_cast<int>(directCases[i][2]), directCases[i][3]));
+                }
+                bool directExpectationsPassed = directValidity == std::vector<uint32_t>{1u, 1u, 1u, 1u, 1u, 0u, 1u};
+                const std::array<bool, 7> caseExpectations{{
+                    directValidity[0] == 1u && std::isfinite(directStdDevs[0]) && directSampleCounts[0] == 9u,
+                    directValidity[1] == 1u && directStdDevs[1] == 0.0f,
+                    directValidity[2] == 1u && directStdDevs[2] > 0.0f,
+                    directValidity[3] == 1u && directStdDevs[3] > 0.0f,
+                    directValidity[4] == 1u && directStdDevs[4] == 0.0f,
+                    directValidity[5] == 0u,
+                    directValidity[6] == 1u && directSampleCounts[6] == 6u
+                }};
+                for (uint32_t i = 0; i < 7; ++i)
+                {
+                    UIUtility::Print("Direct CPU texture case " + std::to_string(i) + ": valid=" + std::to_string(directValidity[i]) + ", stdDev=" + std::to_string(directStdDevs[i]) + ", acceptedSamples=" + std::to_string(directSampleCounts[i]) + ", expectation=" + (caseExpectations[i] ? "pass" : "FAIL") + "\n");
+                    directExpectationsPassed = directExpectationsPassed && caseExpectations[i];
+                }
+                if (!directExpectationsPassed)
+                {
+                    UIUtility::Print("Phase 2O-B CPU direct-helper controlled expectations failed; GPU dispatch skipped. Cases A-F preserve existing expectations; case G is the constant six-sample boundary patch. GPU comparisons still use exact CPU-returned standard deviations.\n");
+                    return result;
+                }
+                printTexturePatchDiagnostics(directImages[6], directCases[6][0], directCases[6][1], static_cast<int>(directCases[6][2]), directCases[6][3], "CPU standalone six-sample case");
+                UIUtility::Print("Phase 2O-B production texture rejection configuration: enabled=" + std::string(setup.m_planeSweepTextureRejectionEnabled ? "true" : "false") + ", minimum stdDev=" + std::to_string(std::max(0.0f, setup.m_planeSweepTextureMinimumStdDev)) + ".\n");
+                float maximumTextureStdDevError = 0.0f;
+                if (!planeSweepGpuPtr->RunTextureStdDevSmokeTest(directPixels, directParameters, directValidity, directStdDevs, directSampleCounts, &maximumTextureStdDevError))
+                {
+                    UIUtility::Print("Phase 2O-B direct helper comparison failed; integration GPU dispatch skipped.\n");
+                    return result;
+                }
+
+                struct Scenario { const char *name; PlaneSweepImage reference; float minimumStdDev; uint32_t expectedAccepted; uint32_t expectedTextureRejected; uint32_t expectedReferenceRejected; };
+                std::array<Scenario, 5> scenarios{{
+                    {"flat + zero threshold", makeImage(false, false), 0.0f, 9, 0, 0},
+                    {"flat + positive threshold", makeImage(false, false), 0.001f, 0, 9, 0},
+                    {"checkerboard + low threshold", makeImage(true, false), 0.1f, 9, 0, 0},
+                    {"checkerboard + high threshold", makeImage(true, false), 1.0f, 0, 9, 0},
+                    {"center alpha precheck", makeImage(false, true), 0.0f, 8, 0, 1}
+                }};
+                const ColmapSetup baseSetup = setup; MultiViewPlaneSweepUtility::PlaneSweepDepthRange depthRange; depthRange.m_nearDepth = 1.0f; depthRange.m_farDepth = 4.0f; depthRange.m_fromSparsePoints = false;
+                PlaneSweepImage geometrySource = scenarios[0].reference;
+                geometrySource.m_intrinsic.m_cx = 1.5;
+                geometrySource.m_intrinsic.m_cy = 1.5;
+                bool geometryValid = true;
+                for (uint32_t y = 0; y < height; y += 2)
+                {
+                    for (uint32_t x = 0; x < width; x += 2)
+                    {
+                        const Float3 point = MultiViewPlaneSweepUtility::UnprojectPixel(scenarios[0].reference.m_camera, scenarios[0].reference.m_intrinsic, static_cast<float>(x), static_cast<float>(y), 1.0f);
+                        float projectedX = 0.0f, projectedY = 0.0f, projectedDepth = 0.0f;
+                        const bool projected = MultiViewPlaneSweepUtility::ProjectPoint(geometrySource.m_camera, geometrySource.m_intrinsic, point, projectedX, projectedY, projectedDepth);
+                        const bool matches = projected && std::fabs(projectedX - static_cast<float>(x)) <= 1.0e-4f && std::fabs(projectedY - static_cast<float>(y)) <= 1.0e-4f;
+                        UIUtility::Print("Phase 2O-B CPU geometry: reference=(" + std::to_string(x) + "," + std::to_string(y) + ") -> source=(" + std::to_string(projectedX) + "," + std::to_string(projectedY) + "), expected=(" + std::to_string(x) + "," + std::to_string(y) + "), valid=" + (matches ? "true" : "false") + "\n");
+                        geometryValid = geometryValid && matches;
+                    }
+                }
+                if (!geometryValid)
+                {
+                    UIUtility::Print("Phase 2O-B CPU geometry sanity failed; integration BuildReferencePoints and GPU dispatch skipped.\n");
+                    return result;
+                }
+                uint32_t matchedScenarios = 0, totalDepthEntries = 0, matchedTextureCounts = 0, matchedAcceptedCounts = 0;
+                float maximumPositiveDepthError = 0.0f;
+                for (uint32_t scenarioIndex = 0; scenarioIndex < scenarios.size(); ++scenarioIndex)
+                {
+                    const Scenario &scenario = scenarios[scenarioIndex];
+                    PlaneSweepImage source = scenario.reference; source.m_texture.m_pixels = scenario.reference.m_texture.m_pixels; for (size_t alpha = 3; alpha < source.m_texture.m_pixels.size(); alpha += pixelBytes) source.m_texture.m_pixels[alpha] = 255;
+                    source.m_intrinsic.m_cx = 1.5;
+                    source.m_intrinsic.m_cy = 1.5;
+                    ColmapSetup controlledSetup = baseSetup; controlledSetup.m_planeSweepImageScale = 1.0f; controlledSetup.m_planeSweepPointStep = 2; controlledSetup.m_planeSweepPlaneCount = 4; controlledSetup.m_planeSweepPatchRadius = 1; controlledSetup.m_planeSweepMinValidSourceViews = 1; controlledSetup.m_planeSweepAlphaThreshold = 0.5f; controlledSetup.m_planeSweepMinimumOpaquePatchRatio = 0.4f; controlledSetup.m_planeSweepCostThreshold = 1.0f; controlledSetup.m_planeSweepConfidenceEnabled = false; controlledSetup.m_planeSweepConfidenceMinimumDifference = 0.0f; controlledSetup.m_planeSweepTextureRejectionEnabled = true; controlledSetup.m_planeSweepTextureMinimumStdDev = scenario.minimumStdDev; controlledSetup.m_planeSweepSaveDepth = false;
+                    MultiViewPlaneSweepUtility::PlaneSweepDepthMap cpuDepthMap; std::vector<MultiViewPlaneSweepUtility::PlaneSweepPointCandidate> cpuCandidates; ColmapPlaneSweepResult cpuResult{}; const std::vector<PlaneSweepImage> sourceImages{source};
+                    MultiViewPlaneSweepUtility::BuildReferencePoints(controlledSetup, scenario.reference, sourceImages, depthRange, 0, cpuDepthMap, cpuCandidates, cpuResult, nullptr);
+                    uint32_t cpuAccepted = 0; for (float depth : cpuDepthMap.m_depthValues) if (std::isfinite(depth) && depth > 0.0f) ++cpuAccepted;
+                    UIUtility::Print("Phase 2O-B CPU scenario " + std::to_string(scenarioIndex) + " (" + scenario.name + "): accepted=" + std::to_string(cpuAccepted) + ", textureRejected=" + std::to_string(cpuResult.m_pointsRejectedTexture) + ", candidates=" + std::to_string(cpuCandidates.size()) + "\nCPU depth map:\n");
+                    for (uint32_t y = 0; y < height; ++y) { std::string row = "row " + std::to_string(y) + ": "; for (uint32_t x = 0; x < width; ++x) row += (x ? "," : "") + std::to_string(cpuDepthMap.m_depthValues[static_cast<size_t>(y) * width + x]); UIUtility::Print(row + "\n"); }
+                    if (cpuDepthMap.m_width != width || cpuDepthMap.m_height != height || cpuDepthMap.m_depthValues.size() != 25 || cpuAccepted != scenario.expectedAccepted || cpuResult.m_pointsRejectedTexture != scenario.expectedTextureRejected || cpuCandidates.size() != cpuAccepted || (scenarioIndex == 4 && cpuAccepted + 1 != 9))
+                    {
+                        UIUtility::Print("Phase 2O-B CPU controlled expectation mismatch; GPU integration dispatch skipped.\n");
+                        return result;
+                    }
+                    PlaneSweepGpuParams gpuParams{}; gpuParams.m_inverseNear = 1.0f; gpuParams.m_inverseFar = 0.25f; gpuParams.m_planeCount = 4; gpuParams.m_patchRadius = 1; gpuParams.m_minValidSourceViews = 1; gpuParams.m_alphaThreshold = 0.5f; gpuParams.m_minimumOpaquePatchRatio = 0.4f; gpuParams.m_costThreshold = 1.0f; gpuParams.m_textureMinimumStdDev = scenario.minimumStdDev; gpuParams.m_sourceCount = 1; gpuParams.m_textureRejectionEnabled = 1; gpuParams.m_confidenceEnabled = 0; gpuParams.m_pointStep = 2; gpuParams.m_scaledWidth = 5; gpuParams.m_scaledHeight = 5;
+                    constexpr uint32_t statusReferenceRejected = 4u, statusTextureRejected = 5u, statusAccepted = 3u, statusNoValidPlane = 0u;
+                    std::vector<uint32_t> sourceMetadata(16, 0), expectedMappings, expectedStatuses; std::vector<float> expectedStdDevs; std::vector<uint32_t> expectedSampleCounts;
+                    uint32_t referenceRejected = 0;
+                    for (uint32_t sy = 0; sy < 5; sy += 2) for (uint32_t sx = 0; sx < 5; sx += 2)
+                    {
+                        const uint32_t rx = sx, ry = sy, index = sy * 5 + sx; expectedMappings.insert(expectedMappings.end(), {sx / 2, sy / 2, sx, sy, rx, ry, index});
+                        Float4 center; const bool centerValid = MultiViewPlaneSweepUtility::SamplePlaneSweepPixel(scenario.reference, static_cast<float>(rx), static_cast<float>(ry), center) && center.w > 0.5f;
+                        if (!centerValid) { expectedStatuses.push_back(statusReferenceRejected); expectedStdDevs.push_back(0.0f); expectedSampleCounts.push_back(0u); ++referenceRejected; }
+                        else { float stdDev = 0.0f; const bool valid = MultiViewPlaneSweepUtility::ComputeTextureStandardDeviation(scenario.reference, static_cast<float>(rx), static_cast<float>(ry), 1, 0.5f, stdDev); const uint32_t samples = sampleCountFor(scenario.reference, static_cast<float>(rx), static_cast<float>(ry), 1, 0.5f); expectedStdDevs.push_back(stdDev); expectedSampleCounts.push_back(samples); expectedStatuses.push_back((!valid || stdDev < scenario.minimumStdDev) ? statusTextureRejected : (cpuDepthMap.m_depthValues[index] > 0.0f ? statusAccepted : statusNoValidPlane)); }
+                    }
+                    if (scenarioIndex == 0) printTexturePatchDiagnostics(scenario.reference, 2.0f, 0.0f, 1, 0.5f, "CPU scenario 0 sample 1");
+                    if (referenceRejected != scenario.expectedReferenceRejected)
+                    {
+                        UIUtility::Print("Phase 2O-B CPU reference-alpha rejection count mismatch; GPU integration dispatch skipped.\n");
+                        return result;
+                    }
+                    const auto gpuIntrinsics = std::vector<GpuCameraIntrinsics>{MakeGpuCameraIntrinsics(scenario.reference.m_intrinsic), MakeGpuCameraIntrinsics(source.m_intrinsic)}; const auto gpuPoses = std::vector<GpuCameraPose>{MakeGpuCameraPose(scenario.reference.m_camera), MakeGpuCameraPose(source.m_camera)};
+                    float scenarioTextureStdDevError = 0.0f, scenarioPositiveDepthError = 0.0f;
+                    if (!planeSweepGpuPtr->RunDepthMapSmokeTest(scenario.reference.m_texture.m_pixels, source.m_texture.m_pixels, gpuIntrinsics, gpuPoses, gpuParams, sourceMetadata, cpuDepthMap.m_depthValues, expectedMappings, expectedStatuses, expectedStdDevs, expectedSampleCounts, static_cast<uint32_t>(cpuResult.m_pointsRejectedTexture), cpuAccepted, static_cast<uint32_t>(cpuCandidates.size()), &scenarioTextureStdDevError, &scenarioPositiveDepthError)) return result;
+                    maximumTextureStdDevError = std::max(maximumTextureStdDevError, scenarioTextureStdDevError); maximumPositiveDepthError = std::max(maximumPositiveDepthError, scenarioPositiveDepthError);
+                    if (scenarioIndex == 0)
+                    {
+                        ColmapSetup radiusZeroSetup = controlledSetup; radiusZeroSetup.m_planeSweepPatchRadius = 0; radiusZeroSetup.m_planeSweepTextureRejectionEnabled = false;
+                        MultiViewPlaneSweepUtility::PlaneSweepDepthMap radiusZeroCpuDepthMap; std::vector<MultiViewPlaneSweepUtility::PlaneSweepPointCandidate> radiusZeroCandidates; ColmapPlaneSweepResult radiusZeroCpuResult{};
+                        MultiViewPlaneSweepUtility::BuildReferencePoints(radiusZeroSetup, scenario.reference, sourceImages, depthRange, 0, radiusZeroCpuDepthMap, radiusZeroCandidates, radiusZeroCpuResult, nullptr);
+                        uint32_t radiusZeroAccepted = 0; for (float depth : radiusZeroCpuDepthMap.m_depthValues) if (std::isfinite(depth) && depth > 0.0f) ++radiusZeroAccepted;
+                        PlaneSweepGpuParams radiusZeroGpuParams = gpuParams; radiusZeroGpuParams.m_patchRadius = 0; radiusZeroGpuParams.m_textureRejectionEnabled = 0;
+                        std::vector<uint32_t> radiusZeroStatuses; radiusZeroStatuses.reserve(expectedMappings.size() / 7);
+                        for (size_t sample = 0; sample < expectedMappings.size() / 7; ++sample) { const uint32_t depthIndex = expectedMappings[sample * 7 + 6]; radiusZeroStatuses.push_back(radiusZeroCpuDepthMap.m_depthValues[depthIndex] > 0.0f ? statusAccepted : statusNoValidPlane); }
+                        if (!planeSweepGpuPtr->RunDepthMapSmokeTest(scenario.reference.m_texture.m_pixels, source.m_texture.m_pixels, gpuIntrinsics, gpuPoses, radiusZeroGpuParams, sourceMetadata, radiusZeroCpuDepthMap.m_depthValues, expectedMappings, radiusZeroStatuses, {}, {}, 0, radiusZeroAccepted, static_cast<uint32_t>(radiusZeroCandidates.size()))) return result;
+                        UIUtility::Print("Phase 2O patchRadius=0 full-depth-map regression passed against production CPU BuildReferencePoints.\n");
+                    }
+                    ++matchedScenarios; totalDepthEntries += 25; ++matchedTextureCounts; ++matchedAcceptedCounts;
+                }
+                const uint32_t directValidCount = static_cast<uint32_t>(std::count(directValidity.begin(), directValidity.end(), 1u));
+                if (matchedScenarios != scenarios.size() || totalDepthEntries != 125u || matchedTextureCounts != scenarios.size() || matchedAcceptedCounts != scenarios.size())
+                {
+                    UIUtility::Print("Phase 2O-B five-scenario integration totals failed.\n");
+                    return result;
+                }
+                UIUtility::Print("PlaneSweep GPU texture-rejection smoke test succeeded:\n6 / 6 legacy texture-standard-deviation validity results matched CPU.\n" + std::to_string(directValidCount) + " / " + std::to_string(directValidCount) + " valid direct stdDev values matched CPU (six-sample cancellation logged separately).\n" + std::to_string(matchedScenarios) + " / 5 texture-rejection depth-map scenarios matched CPU BuildReferencePoints.\n" + std::to_string(totalDepthEntries) + " / 125 depth-buffer entries matched.\n" + std::to_string(matchedTextureCounts) + " / 5 texture-rejection counts matched CPU.\n" + std::to_string(matchedAcceptedCounts) + " / 5 accepted-depth counts matched CPU.\nStrict texture threshold '<' semantics confirmed.\nReference-alpha rejection occurs before texture rejection.\nMaximum ordinary texture-standard-deviation absolute error: " + std::to_string(maximumTextureStdDevError) + "\nMaximum positive-depth absolute error: " + std::to_string(maximumPositiveDepthError) + "\n");
+            }
+            // Keep the legacy multi-source smoke-test handoff disabled.
+            static bool multiSourceCostTestAttempted = true;
             if (planeSweepGpuPtr != nullptr && !multiSourceCostTestAttempted)
             {
                 multiSourceCostTestAttempted = true;

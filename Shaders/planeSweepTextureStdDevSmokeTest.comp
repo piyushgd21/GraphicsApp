@@ -1,0 +1,115 @@
+#version 450
+
+layout(local_size_x = 7, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D caseImages[8];
+layout(set = 0, binding = 1) uniform sampler2D caseMasks[8];
+layout(set = 0, binding = 2, std430) readonly buffer CaseParameters { float values[]; } parameters;
+layout(set = 0, binding = 3, std430) writeonly buffer ValidityOutput { uint values[]; } validityOutput;
+layout(set = 0, binding = 4, std430) writeonly buffer StdDevOutput { float values[]; } stdDevOutput;
+layout(set = 0, binding = 5, std430) writeonly buffer SampleCountOutput { uint values[]; } sampleCountOutput;
+layout(set = 0, binding = 6, std430) writeonly buffer TraceOutput { uint values[]; } traceOutput;
+
+bool IsFiniteFloat(float value) { return !isnan(value) && !isinf(value); }
+
+bool SampleBilinearCpuEquivalent(sampler2D image, vec2 pixel, out vec4 color)
+{
+	ivec2 size = textureSize(image, 0);
+	if (size.x <= 0 || size.y <= 0 || pixel.x < 0.0 || pixel.y < 0.0 || pixel.x > float(size.x - 1) || pixel.y > float(size.y - 1)) { color = vec4(0.0); return false; }
+	int x0 = int(floor(pixel.x)); int y0 = int(floor(pixel.y)); int x1 = min(size.x - 1, x0 + 1); int y1 = min(size.y - 1, y0 + 1);
+	float tx = pixel.x - float(x0); float ty = pixel.y - float(y0);
+	vec4 c00 = texelFetch(image, ivec2(x0, y0), 0); vec4 c10 = texelFetch(image, ivec2(x1, y0), 0); vec4 c01 = texelFetch(image, ivec2(x0, y1), 0); vec4 c11 = texelFetch(image, ivec2(x1, y1), 0);
+	vec4 top = c00 * (1.0 - tx) + c10 * tx; vec4 bottom = c01 * (1.0 - tx) + c11 * tx; color = top * (1.0 - ty) + bottom * ty; return true;
+}
+
+bool SamplePlaneSweepPixelCpuEquivalent(sampler2D image, sampler2D mask, vec2 pixel, bool hasMask, bool maskUsesAlpha, out vec4 color)
+{
+	if (!SampleBilinearCpuEquivalent(image, pixel, color)) return false;
+	if (!hasMask) return true;
+	ivec2 imageSize = textureSize(image, 0); ivec2 maskSize = textureSize(mask, 0);
+	float imageWidth = float(max(1, imageSize.x - 1)); float imageHeight = float(max(1, imageSize.y - 1));
+	float maskWidth = float(max(1, maskSize.x - 1)); float maskHeight = float(max(1, maskSize.y - 1));
+	vec2 maskPixel = vec2(pixel.x / imageWidth * maskWidth, pixel.y / imageHeight * maskHeight); vec4 maskColor;
+	if (!SampleBilinearCpuEquivalent(mask, maskPixel, maskColor)) return false;
+	color.a = maskUsesAlpha ? maskColor.a : maskColor.r * 0.299 + maskColor.g * 0.587 + maskColor.b * 0.114; return true;
+}
+
+bool SampleCase(uint caseIndex, vec2 pixel, out vec4 color)
+{
+	switch (caseIndex)
+	{
+		case 0u: return SamplePlaneSweepPixelCpuEquivalent(caseImages[0], caseMasks[0], pixel, false, false, color);
+		case 1u: return SamplePlaneSweepPixelCpuEquivalent(caseImages[1], caseMasks[1], pixel, false, false, color);
+		case 2u: return SamplePlaneSweepPixelCpuEquivalent(caseImages[2], caseMasks[2], pixel, false, false, color);
+		case 3u: return SamplePlaneSweepPixelCpuEquivalent(caseImages[3], caseMasks[3], pixel, false, false, color);
+		case 4u: return SamplePlaneSweepPixelCpuEquivalent(caseImages[4], caseMasks[4], pixel, false, false, color);
+		case 5u: return SamplePlaneSweepPixelCpuEquivalent(caseImages[5], caseMasks[5], pixel, false, false, color);
+		case 6u: return SamplePlaneSweepPixelCpuEquivalent(caseImages[6], caseMasks[6], pixel, false, false, color);
+		default: color = vec4(0.0); return false;
+	}
+}
+
+bool ComputeTextureStandardDeviationCpuEquivalent(uint caseIndex, float x, float y, int patchRadius, float alphaThreshold, out float standardDeviation, out uint acceptedSampleCount)
+{
+	float luminanceSum = 0.0;
+	float luminanceSquaredSum = 0.0;
+	int sampleCount = 0;
+	uint traceBase = caseIndex * 100u;
+	for (int patchY = -patchRadius; patchY <= patchRadius; ++patchY)
+	{
+		for (int patchX = -patchRadius; patchX <= patchRadius; ++patchX)
+		{
+			vec4 color;
+			if (!SampleCase(caseIndex, vec2(x + float(patchX), y + float(patchY)), color)) continue;
+			if (color.a <= alphaThreshold) continue;
+			precise float redLuminance = color.r * 0.299;
+			precise float greenLuminance = color.g * 0.587;
+			precise float blueLuminance = color.b * 0.114;
+			precise float luminanceRedGreen = redLuminance + greenLuminance;
+			precise float luminance = luminanceRedGreen + blueLuminance;
+			precise float squaredLuminance = luminance * luminance;
+			luminanceSum = luminanceSum + luminance;
+			luminanceSquaredSum = luminanceSquaredSum + squaredLuminance;
+			uint sampleBase = traceBase + 10u + uint(sampleCount) * 10u;
+			traceOutput.values[sampleBase] = floatBitsToUint(x + float(patchX));
+			traceOutput.values[sampleBase + 1u] = floatBitsToUint(y + float(patchY));
+			traceOutput.values[sampleBase + 2u] = floatBitsToUint(color.r);
+			traceOutput.values[sampleBase + 3u] = floatBitsToUint(color.g);
+			traceOutput.values[sampleBase + 4u] = floatBitsToUint(color.b);
+			traceOutput.values[sampleBase + 5u] = floatBitsToUint(color.a);
+			traceOutput.values[sampleBase + 6u] = floatBitsToUint(luminance);
+			traceOutput.values[sampleBase + 7u] = floatBitsToUint(squaredLuminance);
+			traceOutput.values[sampleBase + 8u] = floatBitsToUint(luminanceSum);
+			traceOutput.values[sampleBase + 9u] = floatBitsToUint(luminanceSquaredSum);
+			++sampleCount;
+		}
+	}
+	acceptedSampleCount = uint(max(sampleCount, 0));
+	traceOutput.values[traceBase] = uint(sampleCount);
+	traceOutput.values[traceBase + 1u] = floatBitsToUint(luminanceSum);
+	traceOutput.values[traceBase + 2u] = floatBitsToUint(luminanceSquaredSum);
+	if (sampleCount == 0) { standardDeviation = 0.0; return false; }
+	precise float sampleCountFloat = float(sampleCount);
+	precise float mean = luminanceSum / sampleCountFloat;
+	precise float meanSquared = mean * mean;
+	precise float meanSquaredLuminance = luminanceSquaredSum / sampleCountFloat;
+	precise float variance = meanSquaredLuminance - meanSquared;
+	precise float clampedVariance = max(0.0, variance);
+	standardDeviation = sqrt(clampedVariance);
+	traceOutput.values[traceBase + 3u] = floatBitsToUint(sampleCountFloat);
+	traceOutput.values[traceBase + 4u] = floatBitsToUint(mean);
+	traceOutput.values[traceBase + 5u] = floatBitsToUint(meanSquared);
+	traceOutput.values[traceBase + 6u] = floatBitsToUint(meanSquaredLuminance);
+	traceOutput.values[traceBase + 7u] = floatBitsToUint(variance);
+	traceOutput.values[traceBase + 8u] = floatBitsToUint(clampedVariance);
+	traceOutput.values[traceBase + 9u] = floatBitsToUint(standardDeviation);
+	return IsFiniteFloat(standardDeviation);
+}
+
+void main()
+{
+	uint caseIndex = gl_GlobalInvocationID.x; if (caseIndex >= 7u) return;
+	uint offset = caseIndex * 4u; float x = parameters.values[offset]; float y = parameters.values[offset + 1u]; int radius = int(parameters.values[offset + 2u]); float alphaThreshold = parameters.values[offset + 3u];
+	float standardDeviation; uint acceptedSamples; bool valid = ComputeTextureStandardDeviationCpuEquivalent(caseIndex, x, y, radius, alphaThreshold, standardDeviation, acceptedSamples);
+	validityOutput.values[caseIndex] = valid ? 1u : 0u; stdDevOutput.values[caseIndex] = standardDeviation; sampleCountOutput.values[caseIndex] = acceptedSamples;
+}
