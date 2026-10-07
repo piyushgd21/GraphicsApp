@@ -18,6 +18,7 @@
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <limits>
 #include <stdexcept>
 #include <unordered_map>
@@ -101,6 +102,9 @@ namespace graphicsFX
 
             //Applies a mouse setup value.
             static void ApplyMouseButton(const SetupMap &values, const std::string &key, uint32_t &target);
+
+            //Applies a plane sweep execution mode setup value.
+            static void ApplyPlaneSweepExecutionMode(const SetupMap &values, const std::string &key, PlaneSweepExecutionMode &target);
     };
 
         //Returns a trimmed string.
@@ -615,6 +619,49 @@ namespace graphicsFX
 
             target = MouseButtonFromName(found->second, target);
         }
+
+        //Applies a plane sweep execution mode setup value.
+        void SetupFileUtility::ApplyPlaneSweepExecutionMode(const SetupMap &values, const std::string &key, PlaneSweepExecutionMode &target)
+        {
+            const auto found = values.find(key);
+            if (found == values.end())
+            {
+                return;
+            }
+
+            const std::string normalizedValue = NormalizeName(found->second);
+            std::string compactValue;
+            compactValue.reserve(normalizedValue.size());
+            for (const char character : normalizedValue)
+            {
+                if (std::isalnum(static_cast<unsigned char>(character)) != 0)
+                {
+                    compactValue.push_back(character);
+                }
+            }
+
+            if (compactValue == "CPUONLY")
+            {
+                target = PlaneSweepExecutionMode::CpuOnly;
+                return;
+            }
+
+            if (compactValue == "GPU")
+            {
+                target = PlaneSweepExecutionMode::Gpu;
+                return;
+            }
+
+            if (compactValue == "CPUGPUCOMPARE")
+            {
+                target = PlaneSweepExecutionMode::CpuGpuCompare;
+                return;
+            }
+
+            std::cerr << "Warning: invalid COLMAP.PLANESWEEPEXECUTIONMODE '" << Trim(found->second)
+                      << "'; falling back to CPU_ONLY." << std::endl;
+            target = PlaneSweepExecutionMode::CpuOnly;
+        }
     //Loads program setup values.
     ProgramSetup SetupFileUtility::Load(const std::string &fileName)
     {
@@ -704,6 +751,7 @@ namespace graphicsFX
         ApplyInt(values, "COLMAP.DISPLAYEVERYNTHPOINT", setup.m_colmap.m_displayEveryNthPoint, 1, 1000000);
         ApplyInt(values, "COLMAP.DISPLAYEVERYNTHPIXEL", setup.m_colmap.m_displayEveryNthPixel, 1, 1000000);
         ApplyBool(values, "COLMAP.PLANESWEEPENABLED", setup.m_colmap.m_planeSweepEnabled);
+        ApplyPlaneSweepExecutionMode(values, "COLMAP.PLANESWEEPEXECUTIONMODE", setup.m_colmap.m_planeSweepExecutionMode);
         ApplyInt(values, "COLMAP.PLANESWEEPREFERENCESTEP", setup.m_colmap.m_planeSweepReferenceStep, 1, 1000000);
         ApplyInt(values, "COLMAP.PLANESWEEPSOURCECOUNT", setup.m_colmap.m_planeSweepSourceCount, 1, 128);
         ApplyInt(values, "COLMAP.PLANESWEEPPLANECOUNT", setup.m_colmap.m_planeSweepPlaneCount, 2, 4096);

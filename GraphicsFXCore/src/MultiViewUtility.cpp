@@ -2903,6 +2903,49 @@ namespace graphicsFX
             return std::isfinite(standardDeviation);
         }
 
+        //Builds CPU point candidates from an existing plane sweep depth map.
+        static void BuildPlaneSweepPointCandidatesFromDepthMap(
+            const ColmapSetup &setup,
+            const MultiViewUtility::MultiViewPlaneSweepUtility::PlaneSweepImage &referenceImage,
+            const MultiViewUtility::MultiViewPlaneSweepUtility::PlaneSweepDepthMap &depthMap,
+            std::size_t depthMapIndex,
+            std::vector<MultiViewUtility::MultiViewPlaneSweepUtility::PlaneSweepPointCandidate> &pointCandidates
+        )
+        {
+            const uint32_t pointStep = static_cast<uint32_t>(std::max(1, setup.m_planeSweepPointStep));
+            const uint32_t scaledWidth = depthMap.m_width;
+            const uint32_t scaledHeight = depthMap.m_height;
+            const float alphaThreshold = std::clamp(setup.m_planeSweepAlphaThreshold, 0.0f, 1.0f);
+            if (scaledWidth == 0U || scaledHeight == 0U || depthMap.m_depthValues.size() != static_cast<std::size_t>(scaledWidth) * scaledHeight)
+            {
+                return;
+            }
+
+            for (uint32_t scaledY = 0U; scaledY < scaledHeight; scaledY += pointStep)
+            {
+                for (uint32_t scaledX = 0U; scaledX < scaledWidth; scaledX += pointStep)
+                {
+                    const std::size_t depthIndex = static_cast<std::size_t>(scaledY) * scaledWidth + scaledX;
+                    const float depth = depthMap.m_depthValues[depthIndex];
+                    if (!std::isfinite(depth) || depth <= 0.0f)
+                    {
+                        continue;
+                    }
+
+                    const float referenceX = static_cast<float>((static_cast<std::size_t>(scaledX) * referenceImage.m_texture.m_width) / scaledWidth);
+                    const float referenceY = static_cast<float>((static_cast<std::size_t>(scaledY) * referenceImage.m_texture.m_height) / scaledHeight);
+                    Float4 referenceColor;
+                    if (!MultiViewUtility::MultiViewPlaneSweepUtility::SamplePlaneSweepPixel(referenceImage, referenceX, referenceY, referenceColor) || referenceColor.w <= alphaThreshold)
+                    {
+                        continue;
+                    }
+
+                    const Float3 position = MultiViewUtility::MultiViewPlaneSweepUtility::UnprojectPixel(referenceImage.m_camera, referenceImage.m_intrinsic, referenceX, referenceY, depth);
+                    pointCandidates.push_back(MultiViewUtility::MultiViewPlaneSweepUtility::PlaneSweepPointCandidate{ depthMapIndex, position, referenceColor });
+                }
+            }
+        }
+
         //Builds plane sweep points for one reference image.
         void MultiViewUtility::MultiViewPlaneSweepUtility::BuildReferencePoints(
             const ColmapSetup &setup,
@@ -3027,12 +3070,11 @@ namespace graphicsFX
 
                         const std::size_t depthIndex = static_cast<std::size_t>(scaledY) * scaledWidth + scaledX;
                         depthMap.m_depthValues[depthIndex] = bestDepth;
-
-                        const Float3 position = UnprojectPixel(referenceImage.m_camera, referenceImage.m_intrinsic, referenceX, referenceY, bestDepth);
-                        pointCandidates.push_back(PlaneSweepPointCandidate{ depthMapIndex, position, referenceColor });
                     }
                 }
             }
+
+            BuildPlaneSweepPointCandidatesFromDepthMap(setup, referenceImage, depthMap, depthMapIndex, pointCandidates);
 
             if (SaveDepthOutput(setup, referenceImage.m_camera, depthMap.m_depthValues, scaledWidth, scaledHeight))
             {
@@ -3328,10 +3370,7 @@ namespace graphicsFX
         ColmapPlaneSweepResult MultiViewUtility::BuildColmapPlaneSweepPointCloud(const ColmapCameraReadResult &colmapData, const ColmapSetup &setup, PlaneSweepExperimentMetrics *metricsPtr, PlaneSweepGpu *planeSweepGpuPtr)
         {
             ColmapPlaneSweepResult result;
-            if (planeSweepGpuPtr != nullptr)
-            {
-                UIUtility::Print("BuildColmapPlaneSweepPointCloud received PlaneSweepGpu handoff.\n");
-            }
+            UIUtility::Print(std::string("PlaneSweep execution mode: ") + PlaneSweepExecutionModeName(setup.m_planeSweepExecutionMode) + "\n");
             static constexpr bool runLegacySyntheticSmokeTests = false;
             static bool textureRejectionTestAttempted = false;
             if (runLegacySyntheticSmokeTests && planeSweepGpuPtr != nullptr && !textureRejectionTestAttempted)
@@ -3517,10 +3556,26 @@ namespace graphicsFX
                 }
                 UIUtility::Print("PlaneSweep GPU texture-rejection smoke test succeeded:\n6 / 6 legacy texture-standard-deviation validity results matched CPU.\n" + std::to_string(directValidCount) + " / " + std::to_string(directValidCount) + " valid direct stdDev values matched CPU (six-sample cancellation logged separately).\n" + std::to_string(matchedScenarios) + " / 5 texture-rejection depth-map scenarios matched CPU BuildReferencePoints.\n" + std::to_string(totalDepthEntries) + " / 125 depth-buffer entries matched.\n" + std::to_string(matchedTextureCounts) + " / 5 texture-rejection counts matched CPU.\n" + std::to_string(matchedAcceptedCounts) + " / 5 accepted-depth counts matched CPU.\nStrict texture threshold '<' semantics confirmed.\nReference-alpha rejection occurs before texture rejection.\nMaximum ordinary texture-standard-deviation absolute error: " + std::to_string(maximumTextureStdDevError) + "\nMaximum positive-depth absolute error: " + std::to_string(maximumPositiveDepthError) + "\n");
             }
-            std::array<bool, 5> comparedBuckets{};
-            std::array<std::string, 5> bucketSummary{};
-                std::vector<std::pair<std::size_t, PlaneSweepRealComparisonStats>> comparisonStats;
-            bool phase2PComparisonFailed = false;
+            struct PlaneSweepGpuExecutionTotals
+            {
+                std::size_t m_referencesProcessed{ 0 };
+                std::size_t m_attempted{ 0 };
+                std::size_t m_succeeded{ 0 };
+                std::size_t m_fallbacks{ 0 };
+                std::size_t m_unsupportedSources{ 0 };
+                std::size_t m_allocationFailures{ 0 };
+                std::size_t m_dispatchFailures{ 0 };
+                std::size_t m_otherFailures{ 0 };
+                std::size_t m_gpuCandidates{ 0 };
+                double m_uploadMs{ 0.0 };
+                double m_dispatchMs{ 0.0 };
+                double m_readbackMs{ 0.0 };
+                double m_candidateMaterializationMs{ 0.0 };
+                double m_gpuWallMs{ 0.0 };
+                double m_cpuFallbackMs{ 0.0 };
+                bool m_deviceLost{ false };
+            } gpuTotals;
+            std::vector<std::pair<std::size_t, PlaneSweepRealComparisonStats>> comparisonStats;
             // Keep the legacy multi-source smoke-test handoff disabled.
             static bool multiSourceCostTestAttempted = true;
             if (runLegacySyntheticSmokeTests && planeSweepGpuPtr != nullptr && !multiSourceCostTestAttempted)
@@ -3692,29 +3747,129 @@ namespace graphicsFX
 
             //Resolves the reference and source camera sampling requirements.
             const std::size_t referenceStep = static_cast<std::size_t>(std::max(1, setup.m_planeSweepReferenceStep));
-            const std::size_t referenceCount = colmapData.m_cameras.empty() ? 0 : (colmapData.m_cameras.size() + referenceStep - 1) / referenceStep;
-            const auto getBucketIndex = [referenceCount](std::size_t index)
-            {
-                std::size_t bucket = 0;
-                if (referenceCount == 0) return bucket;
-                const std::size_t quotient = referenceCount / 5, remainder = referenceCount % 5;
-                for (std::size_t candidate = 1; candidate < 5; ++candidate)
-                {
-                    const std::size_t threshold = quotient * candidate + (remainder * candidate + 4) / 5;
-                    if (index < threshold) break;
-                    bucket = candidate;
-                }
-                return bucket;
-            };
             const std::size_t requestedSourceCount = static_cast<std::size_t>(std::max(1, setup.m_planeSweepSourceCount));
             const std::size_t requiredSourceCount = std::min(requestedSourceCount, static_cast<std::size_t>(std::max(1, setup.m_planeSweepMinValidSourceViews)));
             std::vector<MultiViewPlaneSweepUtility::PlaneSweepDepthMap> depthMaps;
             std::vector<MultiViewPlaneSweepUtility::PlaneSweepPointCandidate> pointCandidates;
+            std::vector<PlaneSweepMismatchExample> mismatchExamples;
+            const auto compareDepthMaps = [&](const MultiViewPlaneSweepUtility::PlaneSweepDepthMap &cpuMap,
+                const MultiViewPlaneSweepUtility::PlaneSweepDepthMap &gpuMap,
+                const MultiViewPlaneSweepUtility::PlaneSweepImage &referenceImage,
+                const MultiViewPlaneSweepUtility::PlaneSweepDepthRange &referenceDepthRange,
+                const std::vector<uint32_t> &gpuStatuses,
+                std::size_t reconstructionIndex,
+                PlaneSweepRealComparisonStats &stats)
+            {
+                stats.m_referenceId = referenceImage.m_camera.m_imageId;
+                stats.m_filename = referenceImage.m_camera.m_name;
+                stats.m_reconstructionIndex = reconstructionIndex;
+                stats.m_totalDepthEntries = cpuMap.m_depthValues.size();
+                const uint32_t width = cpuMap.m_width;
+                const uint32_t height = cpuMap.m_height;
+                const uint32_t pointStep = static_cast<uint32_t>(std::max(1, setup.m_planeSweepPointStep));
+                const uint32_t gridWidth = (width + pointStep - 1U) / pointStep;
+                const uint32_t gridHeight = (height + pointStep - 1U) / pointStep;
+                stats.m_meaningfulSamples = static_cast<std::size_t>(gridWidth) * gridHeight;
+                std::vector<float> planeDepths(static_cast<std::size_t>(std::max(2, setup.m_planeSweepPlaneCount)));
+                const float inverseNear = 1.0f / std::max(referenceDepthRange.m_nearDepth, 0.0001f);
+                const float inverseFar = 1.0f / std::max(referenceDepthRange.m_farDepth, referenceDepthRange.m_nearDepth + 0.0001f);
+                for (std::size_t plane = 0; plane < planeDepths.size(); ++plane)
+                {
+                    const float t = static_cast<float>(plane) / static_cast<float>(planeDepths.size() - 1U);
+                    const float inverseDepth = inverseNear * (1.0f - t) + inverseFar * t;
+                    planeDepths[plane] = 1.0f / std::max(inverseDepth, 0.000001f);
+                }
+                const auto closestPlane = [&planeDepths](float depth)
+                {
+                    uint32_t bestPlane = 0U;
+                    float bestError = std::numeric_limits<float>::max();
+                    for (uint32_t plane = 0U; plane < planeDepths.size(); ++plane)
+                    {
+                        const float error = std::fabs(depth - planeDepths[plane]);
+                        if (error < bestError) { bestPlane = plane; bestError = error; }
+                    }
+                    const float tolerance = std::max(1e-5f, 4.0f * std::numeric_limits<float>::epsilon() * std::max({1.0f, std::fabs(depth), std::fabs(planeDepths[bestPlane])}));
+                    return std::pair<uint32_t, bool>{bestPlane, bestError <= tolerance};
+                };
+
+                for (std::size_t index = 0; index < stats.m_totalDepthEntries; ++index)
+                {
+                    const uint32_t x = static_cast<uint32_t>(index % width);
+                    const uint32_t y = static_cast<uint32_t>(index / width);
+                    const bool sampled = x % pointStep == 0U && y % pointStep == 0U;
+                    const float cpuDepth = cpuMap.m_depthValues[index];
+                    const float gpuDepth = gpuMap.m_depthValues[index];
+                    const bool cpuValid = std::isfinite(cpuDepth) && cpuDepth > 0.0f;
+                    const bool gpuValid = std::isfinite(gpuDepth) && gpuDepth > 0.0f;
+                    if (!std::isfinite(gpuDepth)) ++stats.m_gpuNonFinite;
+                    if (cpuValid) ++stats.m_cpuAccepted;
+                    if (gpuValid) ++stats.m_gpuAccepted;
+                    if (!sampled)
+                    {
+                        ++stats.m_unsampledEntries;
+                        if (cpuDepth == 0.0f && gpuDepth == 0.0f) ++stats.m_unsampledZeroMatches;
+                    }
+                    if (!cpuValid && !gpuValid) ++stats.m_bothInvalid;
+                    else if (cpuValid && !gpuValid) ++stats.m_cpuOnlyValid;
+                    else if (!cpuValid && gpuValid) ++stats.m_gpuOnlyValid;
+
+                    bool different = !std::isfinite(gpuDepth) || (!sampled && (cpuDepth != 0.0f || gpuDepth != 0.0f)) || (cpuValid != gpuValid);
+                    uint32_t cpuPlane = UINT32_MAX;
+                    uint32_t gpuPlane = UINT32_MAX;
+                    if (cpuValid && gpuValid)
+                    {
+                        const auto cpuMatch = closestPlane(cpuDepth);
+                        const auto gpuMatch = closestPlane(gpuDepth);
+                        cpuPlane = cpuMatch.first;
+                        gpuPlane = gpuMatch.first;
+                        if (cpuPlane == gpuPlane && cpuMatch.second && gpuMatch.second)
+                        {
+                            ++stats.m_samePlanePositive;
+                            const double absoluteError = std::fabs(static_cast<double>(gpuDepth) - cpuDepth);
+                            stats.m_maximumAbsoluteError = std::max(stats.m_maximumAbsoluteError, absoluteError);
+                            stats.m_maximumRelativeError = std::max(stats.m_maximumRelativeError, absoluteError / std::max(std::fabs(static_cast<double>(cpuDepth)), std::numeric_limits<double>::min()));
+                            stats.m_meanAbsoluteError += absoluteError;
+                        }
+                        else
+                        {
+                            ++stats.m_differentPlane;
+                            different = true;
+                        }
+                    }
+                    if (different)
+                    {
+                        ++stats.m_totalDifferences;
+                        if (mismatchExamples.size() < 20U)
+                        {
+                            PlaneSweepMismatchExample example{};
+                            example.m_referenceId = stats.m_referenceId;
+                            example.m_filename = stats.m_filename;
+                            example.m_reconstructionIndex = reconstructionIndex;
+                            example.m_depthIndex = index;
+                            example.m_scaledX = x;
+                            example.m_scaledY = y;
+                            example.m_referenceX = static_cast<uint32_t>((static_cast<std::size_t>(x) * referenceImage.m_texture.m_width) / width);
+                            example.m_referenceY = static_cast<uint32_t>((static_cast<std::size_t>(y) * referenceImage.m_texture.m_height) / height);
+                            example.m_cpuDepth = cpuDepth;
+                            example.m_gpuDepth = gpuDepth;
+                            example.m_cpuPlane = cpuPlane;
+                            example.m_gpuPlane = gpuPlane;
+                            example.m_cpuValid = cpuValid;
+                            example.m_gpuValid = gpuValid;
+                            const std::size_t sampleIndex = static_cast<std::size_t>(y / pointStep) * gridWidth + x / pointStep;
+                            if (sampled && sampleIndex < gpuStatuses.size()) example.m_gpuStatus = gpuStatuses[sampleIndex];
+                            mismatchExamples.push_back(std::move(example));
+                        }
+                    }
+                }
+                stats.m_classificationMismatches = stats.m_cpuOnlyValid + stats.m_gpuOnlyValid;
+                if (stats.m_samePlanePositive != 0U) stats.m_meanAbsoluteError /= static_cast<double>(stats.m_samePlanePositive);
+                stats.m_succeeded = true;
+            };
 
             //Processes each sampled camera as a plane-sweep reference view.
             for (std::size_t reconstructionIndex = 0, referenceCameraIndex = 0U; referenceCameraIndex < colmapData.m_cameras.size(); ++reconstructionIndex, referenceCameraIndex += referenceStep)
             {
-                const std::size_t bucketIndex = getBucketIndex(reconstructionIndex);
                 MultiViewPlaneSweepUtility::PlaneSweepImage referenceImage;
                 if (!MultiViewPlaneSweepUtility::LoadPlaneSweepImage(colmapData, setup, imageFiles, maskFiles, referenceCameraIndex, referenceImage))
                 {
@@ -3751,10 +3906,6 @@ namespace graphicsFX
 
                 if (sourceImages.size() < requiredSourceCount)
                 {
-                    if (planeSweepGpuPtr != nullptr && !phase2PComparisonFailed && !comparedBuckets[bucketIndex])
-                    {
-                        UIUtility::Print("Phase 2P-B bucket " + std::to_string(bucketIndex) + " skipped reference " + std::to_string(reconstructionIndex) + ": sourceCount=" + std::to_string(sourceImages.size()) + ", GPU maximum=8; normal CPU source requirement=" + std::to_string(requiredSourceCount) + " was not met, so no raw CPU depth map was produced.\n");
-                    }
                     ++result.m_camerasSkipped;
                     continue;
                 }
@@ -3787,103 +3938,163 @@ namespace graphicsFX
                 }
 
                 // If debug enabled and this is the configured reference image, run pixel sweep diagnostics and then return to avoid full reconstruction.
+#if !defined(GRAPHICSAPP_ENABLE_PHASE_2PB_GPU_TRACE)
                 if (setup.m_planeSweepDebugEnabled && setup.m_planeSweepDebugReferenceImageId == static_cast<int>(referenceImage.m_camera.m_imageId))
                 {
                     MultiViewPlaneSweepUtility::DebugPixelSweep(setup, referenceImage, sourceImages, depthRange);
                     // Do not continue with full expensive reconstruction when debugging a single pixel.
                     return result;
                 }
+#endif
 
-                //Builds plane sweep points for one reference image.
                 MultiViewPlaneSweepUtility::PlaneSweepDepthMap depthMap;
                 const std::size_t depthMapIndex = depthMaps.size();
-                const std::size_t candidatesBeforeBuild = pointCandidates.size();
-                const std::size_t textureRejectedBeforeBuild = result.m_pointsRejectedTexture;
-                const std::size_t confidenceRejectedBeforeBuild = result.m_pointsRejectedConfidence;
-                const auto brStart = std::chrono::steady_clock::now();
-                if (metricsPtr)
+                const std::size_t candidatesBeforeReference = pointCandidates.size();
+                const std::size_t textureRejectedBeforeReference = result.m_pointsRejectedTexture;
+                const std::size_t confidenceRejectedBeforeReference = result.m_pointsRejectedConfidence;
+                const auto runCpuSearch = [&]()
                 {
-                    MultiViewPlaneSweepUtility::BuildReferencePoints(
-                        setup,
-                        referenceImage,
-                        sourceImages,
-                        depthRange,
-                        depthMapIndex,
-                        depthMap,
-                        pointCandidates,
-                        result,
-                        metricsPtr
-                    );
-                    const auto brEnd = std::chrono::steady_clock::now();
-                    metricsPtr->m_buildReferencePointsMs += std::chrono::duration<double, std::milli>(brEnd - brStart).count();
+                    const auto cpuStart = std::chrono::steady_clock::now();
+                    MultiViewPlaneSweepUtility::BuildReferencePoints(setup, referenceImage, sourceImages, depthRange, depthMapIndex, depthMap, pointCandidates, result, metricsPtr);
+                    const double elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - cpuStart).count();
+                    if (metricsPtr) metricsPtr->m_buildReferencePointsMs += elapsed;
+                    return elapsed;
+                };
+
+                double cpuBuildMilliseconds = 0.0;
+                if (setup.m_planeSweepExecutionMode != PlaneSweepExecutionMode::Gpu)
+                {
+                    cpuBuildMilliseconds = runCpuSearch();
                 }
-                else
+
+                if (setup.m_planeSweepExecutionMode != PlaneSweepExecutionMode::CpuOnly)
                 {
-                    MultiViewPlaneSweepUtility::BuildReferencePoints(
-                        setup,
-                        referenceImage,
-                        sourceImages,
-                        depthRange,
-                        depthMapIndex,
-                        depthMap,
-                        pointCandidates,
-                        result
-                    );
-                }
-                const auto brEnd = std::chrono::steady_clock::now();
-                const double cpuBuildMilliseconds = std::chrono::duration<double, std::milli>(brEnd - brStart).count();
-                if (planeSweepGpuPtr != nullptr && !phase2PComparisonFailed && !comparedBuckets[bucketIndex] && sourceImages.size() > MAX_PLANE_SWEEP_SOURCE_IMAGES)
-                {
-                    UIUtility::Print("Phase 2P-B bucket " + std::to_string(bucketIndex) + " skipped reference " + std::to_string(reconstructionIndex) + ": sourceCount=" + std::to_string(sourceImages.size()) + ", GPU maximum=8.\n");
-                }
-                if (planeSweepGpuPtr != nullptr && !phase2PComparisonFailed && !comparedBuckets[bucketIndex] && !sourceImages.empty() && sourceImages.size() <= MAX_PLANE_SWEEP_SOURCE_IMAGES)
-                {
-                        comparedBuckets[bucketIndex] = true;
+                    PlaneSweepRealComparisonStats gpuStats{};
+                    MultiViewPlaneSweepUtility::PlaneSweepDepthMap gpuDepthMap;
+                    std::vector<uint32_t> gpuSampleStatuses;
+                    std::string fallbackReason;
+                    bool gpuSucceeded = false;
+                    if (sourceImages.size() > MAX_PLANE_SWEEP_SOURCE_IMAGES)
+                    {
+                        fallbackReason = "source count " + std::to_string(sourceImages.size()) + " exceeds GPU maximum 8";
+                        ++gpuTotals.m_unsupportedSources;
+                    }
+                    else if (gpuTotals.m_deviceLost)
+                    {
+                        fallbackReason = "GPU disabled after VK_ERROR_DEVICE_LOST";
+                    }
+                    else if (planeSweepGpuPtr == nullptr)
+                    {
+                        fallbackReason = "PlaneSweepGpu is unavailable";
+                    }
+                    else
+                    {
                         const uint32_t scaledWidth = std::max(1U, static_cast<uint32_t>(std::lround(static_cast<float>(referenceImage.m_texture.m_width) * setup.m_planeSweepImageScale)));
                         const uint32_t scaledHeight = std::max(1U, static_cast<uint32_t>(std::lround(static_cast<float>(referenceImage.m_texture.m_height) * setup.m_planeSweepImageScale)));
-                        if (scaledWidth != depthMap.m_width || scaledHeight != depthMap.m_height)
-                        {
-                            UIUtility::Print("Phase 2P stopped before GPU dispatch: production scaled dimensions=" + std::to_string(scaledWidth) + "x" + std::to_string(scaledHeight) + ", CPU depth map=" + std::to_string(depthMap.m_width) + "x" + std::to_string(depthMap.m_height) + ".\n");
-                            bucketSummary[bucketIndex] = "reference=" + std::to_string(referenceImage.m_camera.m_imageId) + " " + referenceImage.m_camera.m_name + " (dimension validation failed)";
-                            phase2PComparisonFailed = true;
-                        }
-                        else
-                        {
-                            const int pointStep = std::max(1, setup.m_planeSweepPointStep);
-                        const int planeCount = std::max(2, setup.m_planeSweepPlaneCount);
-                        const int patchRadius = std::max(0, setup.m_planeSweepPatchRadius);
-                        const float inverseNear = 1.0f / std::max(depthRange.m_nearDepth, 0.0001f);
-                        const float inverseFar = 1.0f / std::max(depthRange.m_farDepth, depthRange.m_nearDepth + 0.0001f);
+                        const int pointStep = std::max(1, setup.m_planeSweepPointStep);
                         PlaneSweepGpuParams params{};
-                        params.m_inverseNear = inverseNear; params.m_inverseFar = inverseFar; params.m_planeCount = planeCount; params.m_patchRadius = patchRadius;
+                        params.m_inverseNear = 1.0f / std::max(depthRange.m_nearDepth, 0.0001f);
+                        params.m_inverseFar = 1.0f / std::max(depthRange.m_farDepth, depthRange.m_nearDepth + 0.0001f);
+                        params.m_planeCount = std::max(2, setup.m_planeSweepPlaneCount);
+                        params.m_patchRadius = std::max(0, setup.m_planeSweepPatchRadius);
                         params.m_minValidSourceViews = std::max(1, std::min(static_cast<int>(sourceImages.size()), setup.m_planeSweepMinValidSourceViews));
                         params.m_alphaThreshold = std::clamp(setup.m_planeSweepAlphaThreshold, 0.0f, 1.0f);
                         params.m_minimumOpaquePatchRatio = std::clamp(setup.m_planeSweepMinimumOpaquePatchRatio, 0.0f, 1.0f);
                         params.m_costThreshold = setup.m_planeSweepCostThreshold;
                         params.m_confidenceMinimumDifference = std::max(0.0f, setup.m_planeSweepConfidenceMinimumDifference);
                         params.m_textureMinimumStdDev = std::max(0.0f, setup.m_planeSweepTextureMinimumStdDev);
-                        params.m_sourceCount = static_cast<uint32_t>(sourceImages.size()); params.m_textureRejectionEnabled = setup.m_planeSweepTextureRejectionEnabled ? 1u : 0u;
-                        params.m_confidenceEnabled = setup.m_planeSweepConfidenceEnabled ? 1u : 0u; params.m_pointStep = static_cast<uint32_t>(pointStep); params.m_scaledWidth = scaledWidth; params.m_scaledHeight = scaledHeight;
-                        const size_t pointCandidateCount = pointCandidates.size() - candidatesBeforeBuild;
-                        const size_t textureRejectedCount = result.m_pointsRejectedTexture - textureRejectedBeforeBuild;
-                        const size_t confidenceRejectedCount = result.m_pointsRejectedConfidence - confidenceRejectedBeforeBuild;
-                        ColmapPlaneSweepResult localCounters{}; localCounters.m_pointsRejectedTexture = textureRejectedCount; localCounters.m_pointsRejectedConfidence = confidenceRejectedCount;
-                        UIUtility::Print("Phase 2P CPU BuildReferencePoints candidate count=" + std::to_string(pointCandidateCount) + ", texture rejected=" + std::to_string(textureRejectedCount) + ", confidence rejected=" + std::to_string(confidenceRejectedCount) + ".\n");
-                        PlaneSweepRealComparisonStats stats{};
-                        bool comparisonSucceeded = false;
+                        params.m_sourceCount = static_cast<uint32_t>(sourceImages.size());
+                        params.m_textureRejectionEnabled = setup.m_planeSweepTextureRejectionEnabled ? 1u : 0u;
+                        params.m_confidenceEnabled = setup.m_planeSweepConfidenceEnabled ? 1u : 0u;
+                        params.m_pointStep = static_cast<uint32_t>(pointStep);
+                        params.m_scaledWidth = scaledWidth;
+                        params.m_scaledHeight = scaledHeight;
+                        ColmapPlaneSweepResult cpuCounters{};
+                        cpuCounters.m_pointsRejectedTexture = result.m_pointsRejectedTexture - textureRejectedBeforeReference;
+                        cpuCounters.m_pointsRejectedConfidence = result.m_pointsRejectedConfidence - confidenceRejectedBeforeReference;
+                        const std::size_t cpuCandidateCount = setup.m_planeSweepExecutionMode == PlaneSweepExecutionMode::CpuGpuCompare ? pointCandidates.size() - candidatesBeforeReference : 0U;
+                        ++gpuTotals.m_attempted;
+                        const auto gpuStart = std::chrono::steady_clock::now();
                         try
                         {
-                            comparisonSucceeded = planeSweepGpuPtr->CompareRealDepthMap(referenceImage, sourceImages, setup, params, depthRange, depthMap, pointCandidates, pointCandidateCount, localCounters, reconstructionIndex, cpuBuildMilliseconds, &stats, static_cast<uint32_t>(bucketIndex));
+                            gpuSucceeded = planeSweepGpuPtr->RunProductionDepthMap(
+                                referenceImage, sourceImages, setup, params, depthRange, depthMap, pointCandidates, cpuCandidateCount,
+                                cpuCounters, reconstructionIndex, cpuBuildMilliseconds,
+                                false,
+                                gpuDepthMap, gpuSampleStatuses, &gpuStats, 0U);
                         }
                         catch (const std::exception &ex)
                         {
-                            UIUtility::Print("Phase 2P-B comparison failed for bucket " + std::to_string(bucketIndex) + ", reference " + std::to_string(referenceImage.m_camera.m_imageId) + " " + referenceImage.m_camera.m_name + ": " + ex.what() + ".\n");
-                            stats.m_cpuBuildMilliseconds = cpuBuildMilliseconds;
-                            stats.m_succeeded = false;
+                            gpuStats.m_failureReason = ex.what();
+                            fallbackReason = ex.what();
                         }
-                        bucketSummary[bucketIndex] = "reference=" + std::to_string(referenceImage.m_camera.m_imageId) + " " + referenceImage.m_camera.m_name + " (reconstruction index " + std::to_string(reconstructionIndex) + ")";
-                        comparisonStats.emplace_back(bucketIndex, stats);
-                        if (!comparisonSucceeded) phase2PComparisonFailed = true;
+                        gpuTotals.m_gpuWallMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - gpuStart).count();
+                        gpuTotals.m_uploadMs += gpuStats.m_uploadSetupMilliseconds;
+                        gpuTotals.m_dispatchMs += gpuStats.m_dispatchMilliseconds;
+                        gpuTotals.m_readbackMs += gpuStats.m_readbackComparisonMilliseconds;
+                        if (gpuSucceeded)
+                        {
+                            ++gpuTotals.m_succeeded;
+                            if (setup.m_planeSweepExecutionMode == PlaneSweepExecutionMode::Gpu)
+                            {
+                                depthMap = std::move(gpuDepthMap);
+                                const std::size_t candidatesBeforeMaterialization = pointCandidates.size();
+                                const auto materializationStart = std::chrono::steady_clock::now();
+                                BuildPlaneSweepPointCandidatesFromDepthMap(setup, referenceImage, depthMap, depthMapIndex, pointCandidates);
+                                gpuTotals.m_candidateMaterializationMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - materializationStart).count();
+                                gpuTotals.m_gpuCandidates += pointCandidates.size() - candidatesBeforeMaterialization;
+                                if (MultiViewPlaneSweepUtility::SaveDepthOutput(setup, referenceImage.m_camera, depthMap.m_depthValues, depthMap.m_width, depthMap.m_height)) ++result.m_depthFilesSaved;
+                                ++result.m_referenceImagesProcessed;
+                            }
+                        }
+                        else
+                        {
+                            fallbackReason = fallbackReason.empty() ? gpuStats.m_failureReason : fallbackReason;
+                            if (fallbackReason.empty()) fallbackReason = "GPU depth-map execution failed";
+                            if (gpuStats.m_failureResult == VK_ERROR_DEVICE_LOST)
+                            {
+                                gpuTotals.m_deviceLost = true;
+                                fallbackReason += " (VK_ERROR_DEVICE_LOST; GPU disabled for remaining references)";
+                            }
+                            std::string normalizedReason = fallbackReason;
+                            std::transform(normalizedReason.begin(), normalizedReason.end(), normalizedReason.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                            if (gpuStats.m_failureResult == VK_ERROR_OUT_OF_HOST_MEMORY || gpuStats.m_failureResult == VK_ERROR_OUT_OF_DEVICE_MEMORY || normalizedReason.find("allocation") != std::string::npos || normalizedReason.find("resource upload") != std::string::npos) ++gpuTotals.m_allocationFailures;
+                            else if (normalizedReason.find("dispatch") != std::string::npos || normalizedReason.find("submit") != std::string::npos || normalizedReason.find("fence") != std::string::npos) ++gpuTotals.m_dispatchFailures;
+                            else ++gpuTotals.m_otherFailures;
+                        }
+                    }
+
+                    if (setup.m_planeSweepExecutionMode == PlaneSweepExecutionMode::CpuGpuCompare)
+                    {
+                        gpuStats.m_referenceId = referenceImage.m_camera.m_imageId;
+                        gpuStats.m_filename = referenceImage.m_camera.m_name;
+                        gpuStats.m_reconstructionIndex = reconstructionIndex;
+                        if (gpuSucceeded)
+                        {
+                            compareDepthMaps(depthMap, gpuDepthMap, referenceImage, depthRange, gpuSampleStatuses, reconstructionIndex, gpuStats);
+                        }
+                        else
+                        {
+                            gpuStats.m_failureReason = fallbackReason;
+                            gpuStats.m_totalDepthEntries = depthMap.m_depthValues.size();
+                            const uint32_t gridWidth = (depthMap.m_width + static_cast<uint32_t>(std::max(1, setup.m_planeSweepPointStep)) - 1U) / static_cast<uint32_t>(std::max(1, setup.m_planeSweepPointStep));
+                            const uint32_t gridHeight = (depthMap.m_height + static_cast<uint32_t>(std::max(1, setup.m_planeSweepPointStep)) - 1U) / static_cast<uint32_t>(std::max(1, setup.m_planeSweepPointStep));
+                            gpuStats.m_meaningfulSamples = static_cast<std::size_t>(gridWidth) * gridHeight;
+                            for (float depth : depthMap.m_depthValues) if (std::isfinite(depth) && depth > 0.0f) ++gpuStats.m_cpuAccepted;
+                        }
+                        comparisonStats.emplace_back(reconstructionIndex, gpuStats);
+                    }
+
+                    if (!gpuSucceeded)
+                    {
+                        ++gpuTotals.m_fallbacks;
+                        UIUtility::Print("PlaneSweep GPU fallback: reference=" + std::to_string(referenceImage.m_camera.m_imageId) + " index=" + std::to_string(reconstructionIndex) + " reason=" + fallbackReason + ".\n");
+                        if (setup.m_planeSweepExecutionMode == PlaneSweepExecutionMode::Gpu)
+                        {
+                            const auto fallbackStart = std::chrono::steady_clock::now();
+                            cpuBuildMilliseconds = runCpuSearch();
+                            gpuTotals.m_cpuFallbackMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - fallbackStart).count();
+                        }
                     }
                 }
 
@@ -3893,47 +4104,85 @@ namespace graphicsFX
                 }
             }
 
-            if (planeSweepGpuPtr != nullptr)
+            if (setup.m_planeSweepExecutionMode == PlaneSweepExecutionMode::Gpu)
             {
-                for (std::size_t bucket = 0; bucket < comparedBuckets.size(); ++bucket)
+                std::ostringstream summary; summary.precision(9);
+                summary << "PlaneSweep GPU production summary:\nReferences processed: " << result.m_referenceImagesProcessed
+                    << "\nGPU references attempted: " << gpuTotals.m_attempted
+                    << "\nGPU references succeeded: " << gpuTotals.m_succeeded
+                    << "\nCPU fallbacks: " << gpuTotals.m_fallbacks
+                    << "\nUnsupported source-count fallbacks: " << gpuTotals.m_unsupportedSources
+                    << "\nAllocation/resource failures: " << gpuTotals.m_allocationFailures
+                    << "\nDispatch failures: " << gpuTotals.m_dispatchFailures
+                    << "\nOther GPU failures: " << gpuTotals.m_otherFailures
+                    << "\nGPU failures: " << gpuTotals.m_allocationFailures + gpuTotals.m_dispatchFailures + gpuTotals.m_otherFailures
+                    << "\nGPU accepted points/candidates: " << gpuTotals.m_gpuCandidates
+                    << "\nTotal GPU depth-search wall time: " << gpuTotals.m_gpuWallMs << " ms"
+                    << "\nTotal CPU fallback depth-search time: " << gpuTotals.m_cpuFallbackMs << " ms"
+                    << "\nGPU upload/resource setup: " << gpuTotals.m_uploadMs << " ms"
+                    << "\nGPU dispatch+fence: " << gpuTotals.m_dispatchMs << " ms"
+                    << "\nGPU readback: " << gpuTotals.m_readbackMs << " ms"
+                    << "\nCPU candidate materialization: " << gpuTotals.m_candidateMaterializationMs << " ms\n";
+                UIUtility::Print(summary.str());
+            }
+            else if (setup.m_planeSweepExecutionMode == PlaneSweepExecutionMode::CpuGpuCompare)
+            {
+                std::size_t referencesCompared = 0, comparisonFailures = 0;
+                std::size_t totalDepthEntries = 0, totalMeaningfulSamples = 0, totalCpuAccepted = 0, totalGpuAccepted = 0;
+                std::size_t cpuValidGpuInvalid = 0, cpuInvalidGpuValid = 0, samePlane = 0, differentPlane = 0, gpuNonFinite = 0;
+                std::size_t unsampledEntries = 0, unsampledZeroMatches = 0, totalDifferences = 0;
+                double maxSamePlaneAbsolute = 0.0, maxSamePlaneRelative = 0.0;
+                for (const auto &entry : comparisonStats)
                 {
-                    if (bucketSummary[bucket].empty()) UIUtility::Print("Phase 2P-B bucket " + std::to_string(bucket) + ": no eligible reference" + (phase2PComparisonFailed ? " (comparison not attempted after an earlier failure)" : "") + ".\n");
-                    else UIUtility::Print("Phase 2P-B bucket " + std::to_string(bucket) + ": " + bucketSummary[bucket] + "\n");
+                    const PlaneSweepRealComparisonStats &stats = entry.second;
+                    if (stats.m_succeeded) ++referencesCompared; else ++comparisonFailures;
+                    totalDepthEntries += stats.m_totalDepthEntries;
+                    totalMeaningfulSamples += stats.m_meaningfulSamples;
+                    totalCpuAccepted += stats.m_cpuAccepted;
+                    totalGpuAccepted += stats.m_gpuAccepted;
+                    cpuValidGpuInvalid += stats.m_cpuOnlyValid;
+                    cpuInvalidGpuValid += stats.m_gpuOnlyValid;
+                    samePlane += stats.m_samePlanePositive;
+                    differentPlane += stats.m_differentPlane;
+                    gpuNonFinite += stats.m_gpuNonFinite;
+                    unsampledEntries += stats.m_unsampledEntries;
+                    unsampledZeroMatches += stats.m_unsampledZeroMatches;
+                    totalDifferences += stats.m_totalDifferences;
+                    maxSamePlaneAbsolute = std::max(maxSamePlaneAbsolute, stats.m_maximumAbsoluteError);
+                    maxSamePlaneRelative = std::max(maxSamePlaneRelative, stats.m_maximumRelativeError);
                 }
-                std::size_t totalDepthEntries = 0, totalMeaningfulSamples = 0, totalCpuAccepted = 0, totalGpuAccepted = 0, totalBothInvalid = 0, totalSamePlane = 0, totalClassificationMismatches = 0, totalDifferentPlane = 0, totalUnsampled = 0, totalUnsampledZero = 0, totalGpuNonFinite = 0;
-                double globalMaxAbs = 0.0, globalMaxRel = 0.0, cpuTimeSum = 0.0, dispatchTimeSum = 0.0, gpuTotalTimeSum = 0.0;
-                double cpuTimeMin = std::numeric_limits<double>::max(), cpuTimeMax = 0.0, dispatchTimeMin = std::numeric_limits<double>::max(), dispatchTimeMax = 0.0, gpuTotalTimeMin = std::numeric_limits<double>::max(), gpuTotalTimeMax = 0.0;
-                double gpuUploadTimeSum = 0.0, gpuReadbackTimeSum = 0.0;
-                std::size_t successfulReferences = 0;
-                std::vector<std::size_t> coveredBuckets;
-                for (std::size_t i = 0; i < comparisonStats.size(); ++i)
+                std::ostringstream summary; summary.precision(9);
+                summary << "PlaneSweep CPU/GPU comparison summary:\nReferences processed: " << result.m_referenceImagesProcessed
+                    << "\nReferences compared: " << referencesCompared
+                    << "\nGPU comparison failures/fallbacks: " << comparisonFailures
+                    << "\n\nTotal depth entries: " << totalDepthEntries
+                    << "\nTotal meaningful samples: " << totalMeaningfulSamples
+                    << "\n\nCPU accepted depths: " << totalCpuAccepted
+                    << "\nGPU accepted depths: " << totalGpuAccepted
+                    << "\n\nCPU-valid/GPU-invalid: " << cpuValidGpuInvalid
+                    << "\nCPU-invalid/GPU-valid: " << cpuInvalidGpuValid
+                    << "\n\nSame-plane positive depths: " << samePlane
+                    << "\nDifferent-plane positive depths: " << differentPlane
+                    << "\n\nGPU non-finite depths: " << gpuNonFinite
+                    << "\n\nUnsampled-zero matches:\n" << unsampledZeroMatches << " / " << unsampledEntries
+                    << "\n\nMaximum same-plane absolute error:\n" << maxSamePlaneAbsolute
+                    << "\n\nMaximum same-plane relative error:\n" << maxSamePlaneRelative
+                    << "\n\nComparison completed; " << totalDifferences << " differences observed.\nCPU reconstruction remained authoritative.\n";
+                UIUtility::Print(summary.str());
+                for (std::size_t i = 0; i < mismatchExamples.size(); ++i)
                 {
-                    const auto &stats = comparisonStats[i].second;
-                    totalDepthEntries += stats.m_totalDepthEntries; totalMeaningfulSamples += stats.m_meaningfulSamples; totalCpuAccepted += stats.m_cpuAccepted; totalGpuAccepted += stats.m_gpuAccepted;
-                    totalBothInvalid += stats.m_bothInvalid; totalSamePlane += stats.m_samePlanePositive; totalClassificationMismatches += stats.m_classificationMismatches;
-                    totalDifferentPlane += stats.m_differentPlane; totalUnsampled += stats.m_unsampledEntries; totalUnsampledZero += stats.m_unsampledZeroMatches; totalGpuNonFinite += stats.m_gpuNonFinite;
-                    globalMaxAbs = std::max(globalMaxAbs, stats.m_maximumAbsoluteError); globalMaxRel = std::max(globalMaxRel, stats.m_maximumRelativeError);
-                    const double gpuTotal = stats.m_uploadSetupMilliseconds + stats.m_dispatchMilliseconds + stats.m_readbackComparisonMilliseconds;
-                    cpuTimeSum += stats.m_cpuBuildMilliseconds; dispatchTimeSum += stats.m_dispatchMilliseconds; gpuTotalTimeSum += gpuTotal; gpuUploadTimeSum += stats.m_uploadSetupMilliseconds; gpuReadbackTimeSum += stats.m_readbackComparisonMilliseconds;
-                    cpuTimeMin = std::min(cpuTimeMin, stats.m_cpuBuildMilliseconds); cpuTimeMax = std::max(cpuTimeMax, stats.m_cpuBuildMilliseconds);
-                    dispatchTimeMin = std::min(dispatchTimeMin, stats.m_dispatchMilliseconds); dispatchTimeMax = std::max(dispatchTimeMax, stats.m_dispatchMilliseconds);
-                    gpuTotalTimeMin = std::min(gpuTotalTimeMin, gpuTotal); gpuTotalTimeMax = std::max(gpuTotalTimeMax, gpuTotal);
-                    if (stats.m_succeeded) { ++successfulReferences; coveredBuckets.push_back(comparisonStats[i].first); }
+                    const PlaneSweepMismatchExample &example = mismatchExamples[i];
+                    std::ostringstream line; line.precision(9);
+                    line << "Mismatch example " << i + 1 << ": reference=" << example.m_referenceId << " filename=" << example.m_filename
+                        << " reconstructionIndex=" << example.m_reconstructionIndex << " depthIndex=" << example.m_depthIndex
+                        << " scaled=(" << example.m_scaledX << "," << example.m_scaledY << ") reference=(" << example.m_referenceX << "," << example.m_referenceY << ")"
+                        << " CPU depth=" << example.m_cpuDepth << " GPU depth=" << example.m_gpuDepth
+                        << " CPU plane=" << example.m_cpuPlane << " GPU plane=" << example.m_gpuPlane
+                        << " CPU valid=" << example.m_cpuValid << " GPU valid=" << example.m_gpuValid;
+                    if (example.m_gpuStatus != UINT32_MAX) line << " GPU status=" << example.m_gpuStatus;
+                    line << "\n";
+                    UIUtility::Print(line.str());
                 }
-                if (!comparisonStats.empty())
-                {
-                    std::ostringstream aggregate; aggregate.precision(9);
-                    aggregate << "Phase 2P-B aggregate validation statistics:\nReferences compared: " << comparisonStats.size() << "\nTotal depth entries: " << totalDepthEntries << "\nTotal meaningful samples: " << totalMeaningfulSamples << "\nBoth invalid: " << totalBothInvalid << "\nTotal classification mismatches: " << totalClassificationMismatches << "\nTotal different-plane selections: " << totalDifferentPlane << "\nGPU non-finite depths: " << totalGpuNonFinite << "\nCPU accepted depths total: " << totalCpuAccepted << "\nGPU accepted depths total: " << totalGpuAccepted << "\nSame-plane positive depths: " << totalSamePlane << "\nUnsampled entries matched zero: " << totalUnsampledZero << " / " << totalUnsampled << "\nGlobal maximum absolute depth error: " << globalMaxAbs << "\nGlobal maximum relative depth error: " << globalMaxRel << "\nAverage CPU BuildReferencePoints time: " << cpuTimeSum / comparisonStats.size() << " ms (range " << cpuTimeMin << ".." << cpuTimeMax << ")\nAverage GPU dispatch+fence time: " << dispatchTimeSum / comparisonStats.size() << " ms (range " << dispatchTimeMin << ".." << dispatchTimeMax << ")\nAverage GPU validation total: " << gpuTotalTimeSum / comparisonStats.size() << " ms (range " << gpuTotalTimeMin << ".." << gpuTotalTimeMax << ")\nBuckets covered:";
-                    for (const auto bucket : coveredBuckets) aggregate << " " << bucket;
-                    aggregate << "\nAverage GPU upload/resource setup: " << gpuUploadTimeSum / comparisonStats.size() << " ms; average GPU readback/comparison: " << gpuReadbackTimeSum / comparisonStats.size() << " ms\nVulkan validation errors: see runtime validation output; no error counter is available in this path.\n";
-                    if (!phase2PComparisonFailed && successfulReferences >= 3) aggregate << "PlaneSweep GPU Phase 2P-B multi-reference real-data validation succeeded.\n";
-                    else if (phase2PComparisonFailed) aggregate << "PlaneSweep GPU Phase 2P-B failed and stopped at the first failed comparison.\n";
-                    else aggregate << "PlaneSweep GPU Phase 2P-B insufficient coverage: " << successfulReferences << " successful distributed comparisons; at least 3 required.\n";
-                    aggregate << "CPU reconstruction remained authoritative.\n";
-                    UIUtility::Print(aggregate.str());
-                }
-                else if (phase2PComparisonFailed) UIUtility::Print("Phase 2P-B stopped after an eligible reference comparison could not complete; CPU reconstruction remained authoritative.\n");
-                else UIUtility::Print("Phase 2P-B insufficient coverage: no eligible references produced raw CPU depth maps in the scheduled buckets.\n");
             }
 
             if (metricsPtr)

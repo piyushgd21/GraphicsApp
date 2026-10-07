@@ -21,6 +21,9 @@ layout(set = 0, binding = 11, std430) writeonly buffer TextureStdDevOutput { uin
 layout(set = 0, binding = 12, std430) writeonly buffer TextureSampleCountOutput { uint values[]; } textureSampleCountOutput;
 layout(set = 0, binding = 13, std430) writeonly buffer MinimumOpaqueSamplesOutput { uint values[]; } minimumOpaqueSamplesOutput;
 layout(set = 0, binding = 14, std430) writeonly buffer PlaneCostSampleCountOutput { uint values[]; } planeCostSampleCountOutput;
+#if defined(GRAPHICSAPP_ENABLE_PHASE_2PB_GPU_TRACE)
+layout(set = 0, binding = 15, std430) writeonly buffer TraceOutput { uint values[]; } traceOutput;
+#endif
 
 const float kFloatMax = 3.402823466e+38;
 const uint kStatusNoValidPlane = 0u;
@@ -251,6 +254,21 @@ void main()
 			float cost = 0.0; uint planeMinimumOpaqueSamples = 0u;
 			bool hasCost = ComputePlaneCostCpuEquivalent(referenceX, referenceY, depth, cost, planeMinimumOpaqueSamples, planeCostSampleCount);
 			minimumOpaqueSamples = planeMinimumOpaqueSamples;
+#if defined(GRAPHICSAPP_ENABLE_PHASE_2PB_GPU_TRACE)
+			if (sourceMetadata.values[18] != 0u && depthIndex == sourceMetadata.values[19] && referenceXi == sourceMetadata.values[20] && referenceYi == sourceMetadata.values[21])
+			{
+				uint patchWidth = uint(params.patchRadius * 2 + 1);
+				uint recordsPerPlane = 1u + params.sourceCount * patchWidth * patchWidth;
+				uint traceBase = uint(planeIndex) * recordsPerPlane * 16u;
+				traceOutput.values[traceBase] = 0u;
+				traceOutput.values[traceBase + 1u] = uint(planeIndex);
+				traceOutput.values[traceBase + 2u] = floatBitsToUint(depth);
+				traceOutput.values[traceBase + 3u] = hasCost ? 1u : 0u;
+				traceOutput.values[traceBase + 4u] = floatBitsToUint(cost);
+				traceOutput.values[traceBase + 5u] = planeMinimumOpaqueSamples;
+				traceOutput.values[traceBase + 6u] = planeCostSampleCount;
+			}
+#endif
 			if (hasCost && cost < bestCost) { secondBestCost = bestCost; bestCost = cost; bestDepth = depth; }
 			else if (hasCost && IsFiniteFloat(cost) && cost < secondBestCost) secondBestCost = cost;
 		}

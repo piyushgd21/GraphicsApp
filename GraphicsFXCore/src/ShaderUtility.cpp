@@ -44,10 +44,12 @@ namespace graphicsFX
         for (const std::filesystem::path &sourceFile : shaderFiles)
         {
             const std::filesystem::path outputFile = outputFolder / (sourceFile.filename().string() + ".spv");
+            #if !defined(GRAPHICSAPP_ENABLE_PHASE_2PB_GPU_TRACE)
             if (!ShouldCompileShader(sourceFile, outputFile, shaderSetup.m_compileOnlyIfChanged))
             {
                 continue;
             }
+            #endif
 
             CompileShader(compilerPath, sourceFile, outputFile);
             ++compiledCount;
@@ -347,7 +349,11 @@ namespace graphicsFX
     //Returns a quoted process command line.
     std::wstring ShaderUtility::ShaderCommandLine(const std::filesystem::path &compilerPath, const std::filesystem::path &sourceFile, const std::filesystem::path &outputFile)
     {
-        return L"\"" + compilerPath.wstring() + L"\" \"" + sourceFile.wstring() + L"\" -o \"" + outputFile.wstring() + L"\"";
+        std::wstring commandLine = L"\"" + compilerPath.wstring() + L"\" \"" + sourceFile.wstring() + L"\" -o \"" + outputFile.wstring() + L"\"";
+#if defined(GRAPHICSAPP_ENABLE_PHASE_2PB_GPU_TRACE)
+        commandLine += L" -DGRAPHICSAPP_ENABLE_PHASE_2PB_GPU_TRACE=1";
+#endif
+        return commandLine;
     }
 
 }

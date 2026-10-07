@@ -10,8 +10,31 @@
 
 namespace graphicsFX
 {
+	struct PlaneSweepMismatchExample
+	{
+		uint32_t m_referenceId{ 0 };
+		std::string m_filename;
+		std::size_t m_reconstructionIndex{ 0 };
+		std::size_t m_depthIndex{ 0 };
+		uint32_t m_scaledX{ 0 };
+		uint32_t m_scaledY{ 0 };
+		uint32_t m_referenceX{ 0 };
+		uint32_t m_referenceY{ 0 };
+		float m_cpuDepth{ 0.0f };
+		float m_gpuDepth{ 0.0f };
+		uint32_t m_cpuPlane{ UINT32_MAX };
+		uint32_t m_gpuPlane{ UINT32_MAX };
+		bool m_cpuValid{ false };
+		bool m_gpuValid{ false };
+		uint32_t m_gpuStatus{ UINT32_MAX };
+	};
+
 	struct PlaneSweepRealComparisonStats
 	{
+		uint32_t m_referenceId{ 0 };
+		std::string m_filename;
+		std::size_t m_reconstructionIndex{ 0 };
+		std::size_t m_totalDifferences{ 0 };
 		std::size_t m_totalDepthEntries{ 0 };
 		std::size_t m_meaningfulSamples{ 0 };
 		std::size_t m_cpuAccepted{ 0 };
@@ -32,6 +55,8 @@ namespace graphicsFX
 		double m_dispatchMilliseconds{ 0.0 };
 		double m_readbackComparisonMilliseconds{ 0.0 };
 		double m_cpuBuildMilliseconds{ 0.0 };
+		VkResult m_failureResult{ VK_SUCCESS };
+		std::string m_failureReason;
 		bool m_succeeded{ false };
 	};
 
@@ -117,7 +142,7 @@ namespace graphicsFX
 			float *maximumTextureStdDevError = nullptr,
 			float *maximumPositiveDepthError = nullptr
 		);
-		bool CompareRealDepthMap(
+		bool RunProductionDepthMap(
 			const MultiViewUtility::MultiViewPlaneSweepUtility::PlaneSweepImage &referenceImage,
 			const std::vector<MultiViewUtility::MultiViewPlaneSweepUtility::PlaneSweepImage> &sourceImages,
 			const ColmapSetup &setup,
@@ -129,6 +154,9 @@ namespace graphicsFX
 			const ColmapPlaneSweepResult &cpuCounters,
 			std::size_t referenceReconstructionIndex,
 			double cpuBuildMilliseconds,
+			bool compareCpuResult,
+			MultiViewUtility::MultiViewPlaneSweepUtility::PlaneSweepDepthMap &gpuDepthMap,
+			std::vector<uint32_t> &gpuSampleStatuses,
 			PlaneSweepRealComparisonStats *stats = nullptr,
 			uint32_t bucketIndex = 0
 		);

@@ -1157,13 +1157,17 @@ void Scene::DrawColmap(const ProgramSetup &programSetup, const SceneObjectShader
     {
         std::chrono::time_point timeStart = std::chrono::steady_clock::now();
         PlaneSweepGpu planeSweepGpu;
-        planeSweepGpu.Initialize(
-            m_sceneObjectContext.m_devicePtrGPU,
-            m_sceneObjectContext.m_physicalDevicePtrGPU,
-            m_sceneObjectContext.m_graphicsQueuePtrGPU,
-            m_sceneObjectContext.m_commandPoolPtrGPU
-        );
-        UIUtility::Print("PlaneSweepGpu initialized for PlaneSweep reconstruction handoff.\n");
+        PlaneSweepGpu *planeSweepGpuPtr = nullptr;
+        if (programSetup.m_colmap.m_planeSweepExecutionMode != PlaneSweepExecutionMode::CpuOnly)
+        {
+            planeSweepGpu.Initialize(
+                m_sceneObjectContext.m_devicePtrGPU,
+                m_sceneObjectContext.m_physicalDevicePtrGPU,
+                m_sceneObjectContext.m_graphicsQueuePtrGPU,
+                m_sceneObjectContext.m_commandPoolPtrGPU
+            );
+            planeSweepGpuPtr = &planeSweepGpu;
+        }
 
         // If experiment mode is enabled, run a one-factor-at-a-time sweep across chosen parameters.
         if (programSetup.m_colmap.m_planeSweepExperimentMode)
@@ -1180,7 +1184,7 @@ void Scene::DrawColmap(const ProgramSetup &programSetup, const SceneObjectShader
             {
                 PlaneSweepExperimentMetrics metrics;
                 const auto t0 = std::chrono::steady_clock::now();
-                ColmapPlaneSweepResult result = MultiViewUtility::BuildColmapPlaneSweepPointCloud(colmapData, cfg, &metrics, &planeSweepGpu);
+                ColmapPlaneSweepResult result = MultiViewUtility::BuildColmapPlaneSweepPointCloud(colmapData, cfg, &metrics, planeSweepGpuPtr);
                 const auto t1 = std::chrono::steady_clock::now();
                 metrics.m_totalMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
                 metrics.m_referenceImagesProcessed = result.m_referenceImagesProcessed;
@@ -1346,7 +1350,7 @@ void Scene::DrawColmap(const ProgramSetup &programSetup, const SceneObjectShader
 
         //Builds COLMAP points with CPU plane sweep reconstruction.
         PlaneSweepExperimentMetrics metrics;
-        ColmapPlaneSweepResult pointCloudResult = MultiViewUtility::BuildColmapPlaneSweepPointCloud(colmapData, programSetup.m_colmap, nullptr, &planeSweepGpu);
+        ColmapPlaneSweepResult pointCloudResult = MultiViewUtility::BuildColmapPlaneSweepPointCloud(colmapData, programSetup.m_colmap, nullptr, planeSweepGpuPtr);
         if (!pointCloudResult.m_points.empty())
         {
             const std::size_t pointCount = pointCloudResult.m_points.size();

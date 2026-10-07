@@ -40,6 +40,20 @@ static float FloatFromBits(uint32_t bits)
 	return value;
 }
 
+static const char *VkResultName(VkResult result)
+{
+	switch (result)
+	{
+	case VK_SUCCESS: return "VK_SUCCESS";
+	case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
+	case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+	case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
+	case VK_ERROR_FEATURE_NOT_PRESENT: return "VK_ERROR_FEATURE_NOT_PRESENT";
+	case VK_ERROR_FORMAT_NOT_SUPPORTED: return "VK_ERROR_FORMAT_NOT_SUPPORTED";
+	default: return "VkResult";
+	}
+}
+
 PlaneSweepGpu::PlaneSweepGpu(void)
 {
 }
@@ -1894,7 +1908,7 @@ bool PlaneSweepGpu::RunDepthMapSmokeTest(
 	catch (const std::exception &ex) { cleanup(); UIUtility::Print(std::string("PlaneSweep GPU full depth-map dispatch failed: ") + ex.what() + "\n"); return false; }
 }
 
-bool PlaneSweepGpu::CompareRealDepthMap(
+bool PlaneSweepGpu::RunProductionDepthMap(
 	const MultiViewUtility::MultiViewPlaneSweepUtility::PlaneSweepImage &referenceImage,
 	const std::vector<MultiViewUtility::MultiViewPlaneSweepUtility::PlaneSweepImage> &sourceImages,
 	const ColmapSetup &setup,
@@ -1906,17 +1920,21 @@ bool PlaneSweepGpu::CompareRealDepthMap(
 	const ColmapPlaneSweepResult &cpuCounters,
 	std::size_t referenceReconstructionIndex,
 	double cpuBuildMilliseconds,
+	bool compareCpuResult,
+	MultiViewUtility::MultiViewPlaneSweepUtility::PlaneSweepDepthMap &gpuDepthMap,
+	std::vector<uint32_t> &gpuSampleStatuses,
 	PlaneSweepRealComparisonStats *stats,
 	uint32_t bucketIndex)
 {
 	if (!m_initialized) throw std::runtime_error("PlaneSweepGpu not initialized.");
+	if (stats) *stats = {};
 	if (sourceImages.empty() || sourceImages.size() > MAX_PLANE_SWEEP_SOURCE_IMAGES || params.m_sourceCount != sourceImages.size()) throw std::invalid_argument("Real depth-map comparison requires 1..8 sources in exact CPU order.");
 	const uint32_t scaledWidth = params.m_scaledWidth, scaledHeight = params.m_scaledHeight;
 	const uint32_t pointStep = std::max(1u, params.m_pointStep);
 	const uint32_t gridWidth = (scaledWidth + pointStep - 1u) / pointStep, gridHeight = (scaledHeight + pointStep - 1u) / pointStep;
 	const size_t entryCount = static_cast<size_t>(scaledWidth) * scaledHeight;
 	const size_t sampleCount = static_cast<size_t>(gridWidth) * gridHeight;
-	if (scaledWidth == 0 || scaledHeight == 0 || cpuDepthMap.m_width != scaledWidth || cpuDepthMap.m_height != scaledHeight || cpuDepthMap.m_depthValues.size() != entryCount ||
+	if (scaledWidth == 0 || scaledHeight == 0 || (compareCpuResult && (cpuDepthMap.m_width != scaledWidth || cpuDepthMap.m_height != scaledHeight || cpuDepthMap.m_depthValues.size() != entryCount)) ||
 		params.m_planeCount < 2 || params.m_patchRadius < 0 || params.m_scaledWidth == 0 || params.m_scaledHeight == 0 ||
 		referenceImage.m_texture.m_width == 0 || referenceImage.m_texture.m_height == 0 || referenceImage.m_texture.m_channelCount != 4 ||
 		referenceImage.m_texture.m_pixels.size() != static_cast<size_t>(referenceImage.m_texture.m_width) * referenceImage.m_texture.m_height * 4)
@@ -1929,12 +1947,12 @@ bool PlaneSweepGpu::CompareRealDepthMap(
 	const uint32_t refWidth = referenceImage.m_texture.m_width, refHeight = referenceImage.m_texture.m_height;
 	const uint32_t expectedWidth = std::max(1u, static_cast<uint32_t>(std::lround(static_cast<float>(refWidth) * setup.m_planeSweepImageScale)));
 	const uint32_t expectedHeight = std::max(1u, static_cast<uint32_t>(std::lround(static_cast<float>(refHeight) * setup.m_planeSweepImageScale)));
-	if (expectedWidth != cpuDepthMap.m_width || expectedHeight != cpuDepthMap.m_height) throw std::runtime_error("Production scaled dimensions differ from the raw CPU depth map; Phase 2P comparison stopped.");
+	if (expectedWidth != scaledWidth || expectedHeight != scaledHeight) throw std::runtime_error("GPU scaled dimensions differ from production imageScale.");
 	const uint64_t patchWidth = static_cast<uint64_t>(params.m_patchRadius) * 2u + 1u, patchArea = patchWidth * patchWidth;
 	const uint64_t workload = static_cast<uint64_t>(sampleCount) * static_cast<uint64_t>(params.m_planeCount) * sourceImages.size() * patchArea;
 	const uint32_t referenceId = referenceImage.m_camera.m_imageId;
 	const std::string referenceName = referenceImage.m_camera.m_name;
-	std::ostringstream summary; summary << "Phase 2P-B compact input: bucket=" << bucketIndex << ", reconstruction index=" << referenceReconstructionIndex << ", reference=" << referenceId << " " << referenceName << ", dimensions=" << refWidth << " x " << refHeight << ", hasMask=" << referenceImage.m_hasMask << ", maskUsesAlpha=" << referenceImage.m_maskUsesAlpha;
+	std::ostringstream summary; summary << "PlaneSweep GPU input: reconstruction index=" << referenceReconstructionIndex << ", reference=" << referenceId << " " << referenceName << ", dimensions=" << refWidth << " x " << refHeight << ", hasMask=" << referenceImage.m_hasMask << ", maskUsesAlpha=" << referenceImage.m_maskUsesAlpha;
 	if (referenceImage.m_hasMask) summary << ", mask: " << referenceImage.m_maskTexture.m_width << " x " << referenceImage.m_maskTexture.m_height;
 	summary << ", sourceCount=" << sourceImages.size() << ", source slots=";
 	for (size_t i = 0; i < sourceImages.size(); ++i) { const auto &src = sourceImages[i]; summary << (i ? " | " : "") << i << ":" << src.m_camera.m_imageId << ":" << src.m_camera.m_name; }
@@ -1973,8 +1991,10 @@ bool PlaneSweepGpu::CompareRealDepthMap(
 	const std::array<VkDeviceSize, 4> inputSizes{{intrinsics.size() * sizeof(GpuCameraIntrinsics), poses.size() * sizeof(GpuCameraPose), sizeof(params), metadata.size() * sizeof(uint32_t)}};
 	const VkDeviceSize depthBytes = entryCount * sizeof(float);
 	const std::array<VkDeviceSize, 7> outputSizes{{depthBytes, mappings.size() * sizeof(uint32_t), statuses.size() * sizeof(uint32_t), textureTrace.size() * sizeof(uint32_t), textureSamples.size() * sizeof(uint32_t), opaqueSamples.size() * sizeof(uint32_t), planeSamples.size() * sizeof(uint32_t)}};
+	constexpr uint32_t kOutputCount = 7;
+	constexpr uint32_t kStorageBufferCount = 11;
 	std::array<VkBuffer, 4> inputStaging{}, inputBuffers{}; std::array<VkDeviceMemory, 4> inputStagingMemory{}, inputMemory{};
-	std::array<VkBuffer, 7> outputBuffers{}, readbackBuffers{}; std::array<VkDeviceMemory, 7> outputMemory{}, readbackMemory{};
+	std::array<VkBuffer, kOutputCount> outputBuffers{}, readbackBuffers{}; std::array<VkDeviceMemory, kOutputCount> outputMemory{}, readbackMemory{};
 	std::array<VkImage, kImageCount> images{}; std::array<VkDeviceMemory, kImageCount> imageMemory{}; std::array<VkImageView, kImageCount> imageViews{};
 	VkBuffer imageStaging = VK_NULL_HANDLE; VkDeviceMemory imageStagingMemory = VK_NULL_HANDLE; VkSampler sampler = VK_NULL_HANDLE;
 	VkDescriptorSetLayout setLayout = VK_NULL_HANDLE; VkDescriptorPool pool = VK_NULL_HANDLE; VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
@@ -1990,32 +2010,53 @@ bool PlaneSweepGpu::CompareRealDepthMap(
 		auto destroyBuffer = [&](VkBuffer &buffer, VkDeviceMemory &memory) { if (buffer) vkDestroyBuffer(m_device, buffer, nullptr); if (memory) vkFreeMemory(m_device, memory, nullptr); buffer = VK_NULL_HANDLE; memory = VK_NULL_HANDLE; };
 		destroyBuffer(imageStaging, imageStagingMemory);
 		for (uint32_t i = 0; i < 4; ++i) { destroyBuffer(inputStaging[i], inputStagingMemory[i]); destroyBuffer(inputBuffers[i], inputMemory[i]); }
-		for (uint32_t i = 0; i < 7; ++i) { destroyBuffer(outputBuffers[i], outputMemory[i]); destroyBuffer(readbackBuffers[i], readbackMemory[i]); }
+		for (uint32_t i = 0; i < kOutputCount; ++i) { destroyBuffer(outputBuffers[i], outputMemory[i]); destroyBuffer(readbackBuffers[i], readbackMemory[i]); }
 	};
 	const auto gpuSetupStart = std::chrono::steady_clock::now();
 	try
 	{
 		VkPhysicalDeviceProperties deviceProperties{}; vkGetPhysicalDeviceProperties(m_physicalDevice, &deviceProperties);
 		const auto &limits = deviceProperties.limits;
-		if (limits.maxPerStageDescriptorSamplers < 18 || limits.maxPerStageDescriptorSampledImages < 18 || limits.maxPerStageDescriptorStorageBuffers < 11 || limits.maxPerStageResources < 29) throw std::runtime_error("Vulkan descriptor limits cannot support the fixed PlaneSweep descriptor contract.");
+		if (limits.maxPerStageDescriptorSamplers < 18 || limits.maxPerStageDescriptorSampledImages < 18 || limits.maxPerStageDescriptorStorageBuffers < kStorageBufferCount || limits.maxPerStageResources < 18 + kStorageBufferCount) throw std::runtime_error("Vulkan descriptor limits cannot support the fixed PlaneSweep descriptor contract.");
 		VkPhysicalDeviceMemoryProperties memoryProperties{}; vkGetPhysicalDeviceMemoryProperties(m_physicalDevice, &memoryProperties);
 		auto memoryType = [&](uint32_t bits, VkMemoryPropertyFlags flags) { for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i) if ((bits & (1u << i)) && (memoryProperties.memoryTypes[i].propertyFlags & flags) == flags) return i; return UINT32_MAX; };
-		auto createBuffer = [&](VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags flags, VkBuffer &buffer, VkDeviceMemory &memory) { VkBufferCreateInfo ci{}; ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO; ci.size = std::max<VkDeviceSize>(size, 4); ci.usage = usage; ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE; if (vkCreateBuffer(m_device, &ci, nullptr, &buffer) != VK_SUCCESS) throw std::runtime_error("Failed to create Phase 2P buffer."); VkMemoryRequirements req{}; vkGetBufferMemoryRequirements(m_device, buffer, &req); uint32_t type = memoryType(req.memoryTypeBits, flags); if (type == UINT32_MAX) throw std::runtime_error("No memory type for Phase 2P buffer."); VkMemoryAllocateInfo ai{}; ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO; ai.allocationSize = req.size; ai.memoryTypeIndex = type; if (vkAllocateMemory(m_device, &ai, nullptr, &memory) != VK_SUCCESS || vkBindBufferMemory(m_device, buffer, memory, 0) != VK_SUCCESS) throw std::runtime_error("Failed to allocate Phase 2P buffer memory."); };
+		auto createBuffer = [&](VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags flags, VkBuffer &buffer, VkDeviceMemory &memory, const std::string &purpose)
+		{
+			VkBufferCreateInfo ci{}; ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO; ci.size = std::max<VkDeviceSize>(size, 4); ci.usage = usage; ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+			const VkResult createResult = vkCreateBuffer(m_device, &ci, nullptr, &buffer);
+			if (createResult != VK_SUCCESS) { if (stats) stats->m_failureResult = createResult; throw std::runtime_error("PlaneSweep GPU allocation failed: resource purpose=" + purpose + ", requested size=" + std::to_string(size) + ", VkResult=" + VkResultName(createResult) + "(" + std::to_string(createResult) + ")"); }
+			VkMemoryRequirements req{}; vkGetBufferMemoryRequirements(m_device, buffer, &req); uint32_t type = memoryType(req.memoryTypeBits, flags);
+			if (type == UINT32_MAX) throw std::runtime_error("PlaneSweep GPU allocation failed: resource purpose=" + purpose + ", requested size=" + std::to_string(size) + ", no compatible memory type.");
+			VkMemoryAllocateInfo ai{}; ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO; ai.allocationSize = req.size; ai.memoryTypeIndex = type;
+			const VkResult allocateResult = vkAllocateMemory(m_device, &ai, nullptr, &memory);
+			if (allocateResult != VK_SUCCESS) { if (stats) stats->m_failureResult = allocateResult; throw std::runtime_error("PlaneSweep GPU allocation failed: resource purpose=" + purpose + ", requested size=" + std::to_string(req.size) + ", VkResult=" + VkResultName(allocateResult) + "(" + std::to_string(allocateResult) + ")"); }
+			const VkResult bindResult = vkBindBufferMemory(m_device, buffer, memory, 0);
+			if (bindResult != VK_SUCCESS) { if (stats) stats->m_failureResult = bindResult; throw std::runtime_error("PlaneSweep GPU allocation failed: resource purpose=" + purpose + ", requested size=" + std::to_string(req.size) + ", bind VkResult=" + VkResultName(bindResult) + "(" + std::to_string(bindResult) + ")"); }
+		};
 		std::vector<VkDeviceSize> offsets(kImageCount); VkDeviceSize stagingSize = 0;
 		for (uint32_t i = 0; i < kImageCount; ++i) { const VkDeviceSize bytes = static_cast<VkDeviceSize>(upload[i].pixels->size()); offsets[i] = stagingSize; stagingSize += bytes; }
-		createBuffer(stagingSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, imageStaging, imageStagingMemory);
+		createBuffer(stagingSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, imageStaging, imageStagingMemory, "image upload staging");
 		void *mapped = nullptr; if (vkMapMemory(m_device, imageStagingMemory, 0, stagingSize, 0, &mapped) != VK_SUCCESS) throw std::runtime_error("Failed to map Phase 2P image staging.");
 		for (uint32_t i = 0; i < kImageCount; ++i) std::memcpy(static_cast<uint8_t *>(mapped) + offsets[i], upload[i].pixels->data(), upload[i].pixels->size()); vkUnmapMemory(m_device, imageStagingMemory);
 		for (uint32_t i = 0; i < kImageCount; ++i)
 		{
 			VkImageCreateInfo ci{}; ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO; ci.imageType = VK_IMAGE_TYPE_2D; ci.format = kFormat; ci.extent = {upload[i].width, upload[i].height, 1}; ci.mipLevels = 1; ci.arrayLayers = 1; ci.samples = VK_SAMPLE_COUNT_1_BIT; ci.tiling = VK_IMAGE_TILING_OPTIMAL; ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT; ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE; ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-			if (vkCreateImage(m_device, &ci, nullptr, &images[i]) != VK_SUCCESS) throw std::runtime_error("Failed to create Phase 2P image."); VkMemoryRequirements req{}; vkGetImageMemoryRequirements(m_device, images[i], &req); uint32_t type = memoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT); if (type == UINT32_MAX) throw std::runtime_error("No device-local memory for Phase 2P image."); VkMemoryAllocateInfo ai{}; ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO; ai.allocationSize = req.size; ai.memoryTypeIndex = type; if (vkAllocateMemory(m_device, &ai, nullptr, &imageMemory[i]) != VK_SUCCESS || vkBindImageMemory(m_device, images[i], imageMemory[i], 0) != VK_SUCCESS) throw std::runtime_error("Failed to bind Phase 2P image memory.");
+			const std::string imagePurpose = i == 0 ? "reference image upload" : (i == 1 ? "reference mask upload" : (i < 10 ? "source image upload" : "source mask upload"));
+			const VkResult imageCreateResult = vkCreateImage(m_device, &ci, nullptr, &images[i]);
+			if (imageCreateResult != VK_SUCCESS) { if (stats) stats->m_failureResult = imageCreateResult; throw std::runtime_error("PlaneSweep GPU resource upload failed: purpose=" + imagePurpose + ", dimensions=" + std::to_string(upload[i].width) + "x" + std::to_string(upload[i].height) + ", VkResult=" + VkResultName(imageCreateResult) + "(" + std::to_string(imageCreateResult) + ")"); }
+			VkMemoryRequirements req{}; vkGetImageMemoryRequirements(m_device, images[i], &req); uint32_t type = memoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+			if (type == UINT32_MAX) throw std::runtime_error("PlaneSweep GPU allocation failed: purpose=" + imagePurpose + ", requested size=" + std::to_string(req.size) + ", no device-local memory type.");
+			VkMemoryAllocateInfo ai{}; ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO; ai.allocationSize = req.size; ai.memoryTypeIndex = type;
+			const VkResult imageAllocateResult = vkAllocateMemory(m_device, &ai, nullptr, &imageMemory[i]);
+			if (imageAllocateResult != VK_SUCCESS) { if (stats) stats->m_failureResult = imageAllocateResult; throw std::runtime_error("PlaneSweep GPU allocation failed: purpose=" + imagePurpose + ", requested size=" + std::to_string(req.size) + ", VkResult=" + VkResultName(imageAllocateResult) + "(" + std::to_string(imageAllocateResult) + ")"); }
+			const VkResult imageBindResult = vkBindImageMemory(m_device, images[i], imageMemory[i], 0);
+			if (imageBindResult != VK_SUCCESS) { if (stats) stats->m_failureResult = imageBindResult; throw std::runtime_error("PlaneSweep GPU allocation failed: purpose=" + imagePurpose + ", requested size=" + std::to_string(req.size) + ", bind VkResult=" + VkResultName(imageBindResult) + "(" + std::to_string(imageBindResult) + ")"); }
 			VkImageViewCreateInfo vi{}; vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO; vi.image = images[i]; vi.viewType = VK_IMAGE_VIEW_TYPE_2D; vi.format = kFormat; vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}; if (vkCreateImageView(m_device, &vi, nullptr, &imageViews[i]) != VK_SUCCESS) throw std::runtime_error("Failed to create Phase 2P image view.");
 		}
 		VkFormatProperties formatProperties{}; vkGetPhysicalDeviceFormatProperties(m_physicalDevice, kFormat, &formatProperties); if ((formatProperties.optimalTilingFeatures & (VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) != (VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) throw std::runtime_error("VK_FORMAT_R8G8B8A8_UNORM sampled upload is unsupported.");
 		VkSamplerCreateInfo si{}; si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO; si.magFilter = VK_FILTER_NEAREST; si.minFilter = VK_FILTER_NEAREST; si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST; si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE; si.maxLod = 0.0f; if (vkCreateSampler(m_device, &si, nullptr, &sampler) != VK_SUCCESS) throw std::runtime_error("Failed to create Phase 2P sampler.");
-		for (uint32_t i = 0; i < 4; ++i) { createBuffer(inputSizes[i], VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, inputStaging[i], inputStagingMemory[i]); if (vkMapMemory(m_device, inputStagingMemory[i], 0, inputSizes[i], 0, &mapped) != VK_SUCCESS) throw std::runtime_error("Failed to map Phase 2P input."); std::memcpy(mapped, inputData[i], static_cast<size_t>(inputSizes[i])); vkUnmapMemory(m_device, inputStagingMemory[i]); createBuffer(inputSizes[i], VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, inputBuffers[i], inputMemory[i]); }
-		for (uint32_t i = 0; i < 7; ++i) { createBuffer(outputSizes[i], VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | (i == 0 ? VK_BUFFER_USAGE_TRANSFER_DST_BIT : 0), VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, outputBuffers[i], outputMemory[i]); createBuffer(outputSizes[i], VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, readbackBuffers[i], readbackMemory[i]); }
+		for (uint32_t i = 0; i < 4; ++i) { const std::string suffix = "[" + std::to_string(i) + "]"; createBuffer(inputSizes[i], VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, inputStaging[i], inputStagingMemory[i], "input staging" + suffix); if (vkMapMemory(m_device, inputStagingMemory[i], 0, inputSizes[i], 0, &mapped) != VK_SUCCESS) throw std::runtime_error("Failed to map PlaneSweep GPU input staging, requested size=" + std::to_string(inputSizes[i])); std::memcpy(mapped, inputData[i], static_cast<size_t>(inputSizes[i])); vkUnmapMemory(m_device, inputStagingMemory[i]); createBuffer(inputSizes[i], VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, inputBuffers[i], inputMemory[i], "input device buffer" + suffix); }
+		for (uint32_t i = 0; i < 7; ++i) { const std::string suffix = "[" + std::to_string(i) + "]"; createBuffer(outputSizes[i], VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | (i == 0 ? VK_BUFFER_USAGE_TRANSFER_DST_BIT : 0), VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, outputBuffers[i], outputMemory[i], i == 0 ? "depth-map output buffer" : "diagnostic output buffer" + suffix); createBuffer(outputSizes[i], VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, readbackBuffers[i], readbackMemory[i], i == 0 ? "depth-map readback buffer" : "diagnostic readback buffer" + suffix); }
 		std::array<VkDescriptorSetLayoutBinding, 15> bindings{}; for (uint32_t i = 0; i < 15; ++i) { bindings[i].binding = i; bindings[i].descriptorType = i < 4 ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; bindings[i].descriptorCount = (i == 2 || i == 3) ? 8 : 1; bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT; }
 		VkDescriptorSetLayoutCreateInfo lci{}; lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO; lci.bindingCount = 15; lci.pBindings = bindings.data(); if (vkCreateDescriptorSetLayout(m_device, &lci, nullptr, &setLayout) != VK_SUCCESS) throw std::runtime_error("Failed to create Phase 2P descriptor layout.");
 		std::array<VkDescriptorPoolSize, 2> poolSizes{{{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 18}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 11}}}; VkDescriptorPoolCreateInfo pci{}; pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO; pci.maxSets = 1; pci.poolSizeCount = 2; pci.pPoolSizes = poolSizes.data(); if (vkCreateDescriptorPool(m_device, &pci, nullptr, &pool) != VK_SUCCESS) throw std::runtime_error("Failed to create Phase 2P descriptor pool."); VkDescriptorSetAllocateInfo sai{}; sai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO; sai.descriptorPool = pool; sai.descriptorSetCount = 1; sai.pSetLayouts = &setLayout; if (vkAllocateDescriptorSets(m_device, &sai, &descriptorSet) != VK_SUCCESS) throw std::runtime_error("Failed to allocate Phase 2P descriptor set.");
@@ -2037,15 +2078,33 @@ bool PlaneSweepGpu::CompareRealDepthMap(
 		const auto dispatchStart = std::chrono::steady_clock::now();
 		VkSubmitInfo submit{}; submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO; submit.commandBufferCount = 1; submit.pCommandBuffers = &commandBuffer;
 		const VkResult submitResult = vkQueueSubmit(m_queue, 1, &submit, fence);
-		if (submitResult != VK_SUCCESS) throw std::runtime_error("Phase 2P-B queue submit failed VkResult=" + std::to_string(submitResult) + ", dimensions=" + std::to_string(scaledWidth) + "x" + std::to_string(scaledHeight) + ", grid=" + std::to_string(gridWidth) + "x" + std::to_string(gridHeight) + ", planes=" + std::to_string(params.m_planeCount) + ", sources=" + std::to_string(sourceImages.size()) + ", patchRadius=" + std::to_string(params.m_patchRadius) + ", workload=" + std::to_string(workload));
+		if (submitResult != VK_SUCCESS) { if (stats) stats->m_failureResult = submitResult; throw std::runtime_error("PlaneSweep GPU queue submit failed " + std::string(VkResultName(submitResult)) + "(" + std::to_string(submitResult) + "), dimensions=" + std::to_string(scaledWidth) + "x" + std::to_string(scaledHeight) + ", grid=" + std::to_string(gridWidth) + "x" + std::to_string(gridHeight) + ", planes=" + std::to_string(params.m_planeCount) + ", sources=" + std::to_string(sourceImages.size()) + ", patchRadius=" + std::to_string(params.m_patchRadius) + ", workload=" + std::to_string(workload)); }
 		submitted = true;
 		const VkResult waitResult = vkWaitForFences(m_device, 1, &fence, VK_TRUE, UINT64_MAX);
-		if (waitResult != VK_SUCCESS) throw std::runtime_error("Phase 2P-B fence wait failed VkResult=" + std::to_string(waitResult) + ", dimensions=" + std::to_string(scaledWidth) + "x" + std::to_string(scaledHeight) + ", grid=" + std::to_string(gridWidth) + "x" + std::to_string(gridHeight) + ", planes=" + std::to_string(params.m_planeCount) + ", sources=" + std::to_string(sourceImages.size()) + ", patchRadius=" + std::to_string(params.m_patchRadius) + ", workload=" + std::to_string(workload));
+		if (waitResult != VK_SUCCESS) { if (stats) stats->m_failureResult = waitResult; throw std::runtime_error("PlaneSweep GPU fence wait failed " + std::string(VkResultName(waitResult)) + "(" + std::to_string(waitResult) + "), dimensions=" + std::to_string(scaledWidth) + "x" + std::to_string(scaledHeight) + ", grid=" + std::to_string(gridWidth) + "x" + std::to_string(gridHeight) + ", planes=" + std::to_string(params.m_planeCount) + ", sources=" + std::to_string(sourceImages.size()) + ", patchRadius=" + std::to_string(params.m_patchRadius) + ", workload=" + std::to_string(workload)); }
 		submitted = false;
 		const double dispatchMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - dispatchStart).count();
 		if (stats) stats->m_dispatchMilliseconds = dispatchMs;
 		const auto compareStart = std::chrono::steady_clock::now(); std::vector<float> gpuDepth(entryCount); std::vector<uint32_t> gpuStatuses(sampleCount), gpuTextureTrace(sampleCount * textureTraceStride), gpuTextureSamples(sampleCount); std::array<void *, 7> destinations{{gpuDepth.data(), mappings.data(), gpuStatuses.data(), gpuTextureTrace.data(), gpuTextureSamples.data(), opaqueSamples.data(), planeSamples.data()}};
 		for (uint32_t i = 0; i < 7; ++i) { if (vkMapMemory(m_device, readbackMemory[i], 0, outputSizes[i], 0, &mapped) != VK_SUCCESS) throw std::runtime_error("Failed to map Phase 2P readback."); std::memcpy(destinations[i], mapped, static_cast<size_t>(outputSizes[i])); vkUnmapMemory(m_device, readbackMemory[i]); }
+		gpuDepthMap = {};
+		gpuDepthMap.m_camera = referenceImage.m_camera;
+		gpuDepthMap.m_intrinsic = referenceImage.m_intrinsic;
+		gpuDepthMap.m_imageWidth = refWidth;
+		gpuDepthMap.m_imageHeight = refHeight;
+		gpuDepthMap.m_width = scaledWidth;
+		gpuDepthMap.m_height = scaledHeight;
+		gpuDepthMap.m_depthValues = gpuDepth;
+		gpuSampleStatuses = gpuStatuses;
+		if (!compareCpuResult)
+		{
+			size_t gpuAccepted = 0;
+			size_t gpuNonFinite = 0;
+			for (float depth : gpuDepth) { if (!std::isfinite(depth)) ++gpuNonFinite; else if (depth > 0.0f) ++gpuAccepted; }
+			if (stats) { stats->m_totalDepthEntries = entryCount; stats->m_meaningfulSamples = sampleCount; stats->m_gpuAccepted = gpuAccepted; stats->m_gpuNonFinite = gpuNonFinite; stats->m_readbackComparisonMilliseconds = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - compareStart).count(); stats->m_succeeded = true; }
+			cleanup();
+			return true;
+		}
 		std::vector<float> planeDepths(static_cast<size_t>(params.m_planeCount)); for (int i = 0; i < params.m_planeCount; ++i) { const float t = static_cast<float>(i) / static_cast<float>(params.m_planeCount - 1); const float inv = inverseNear * (1.0f - t) + inverseFar * t; planeDepths[i] = 1.0f / std::max(inv, 0.000001f); }
 		auto closestPlane = [&](float d) { uint32_t index = 0; float error = std::numeric_limits<float>::max(); for (uint32_t i = 0; i < planeDepths.size(); ++i) { const float e = std::fabs(d - planeDepths[i]); if (e < error) { index = i; error = e; } } const float tol = std::max(1e-5f, 4.0f * std::numeric_limits<float>::epsilon() * std::max({1.0f, std::fabs(d), std::fabs(planeDepths[index])})); return std::pair<uint32_t, bool>{index, error <= tol}; };
 		size_t bothInvalid = 0, cpuOnly = 0, gpuOnly = 0, samePlane = 0, differentPlane = 0, unsampled = 0, unsampledZeroMatches = 0, unsampledNonzero = 0, gpuNonfinite = 0, cpuPositive = 0, gpuPositive = 0; double maxAbs = 0.0, maxRel = 0.0, sumAbs = 0.0; std::vector<size_t> mismatches;
@@ -2067,10 +2126,10 @@ bool PlaneSweepGpu::CompareRealDepthMap(
 		else report << "Phase 2P-B real reference comparison FAILED:\nBucket=" << bucketIndex << ", reference=" << referenceId << " " << referenceName << ", reconstruction index=" << referenceReconstructionIndex << "\nTotal entries=" << entryCount << ", both invalid=" << bothInvalid << ", CPU-only-valid=" << cpuOnly << ", GPU-only-valid=" << gpuOnly << ", same-plane positive=" << samePlane << ", different-plane=" << differentPlane << ", classification mismatches=" << classificationMismatches << ", GPU NaN/Inf=" << gpuNonfinite << ", unsampled zero=" << unsampledZeroMatches << "/" << unsampled << ", maximum same-plane error=" << maxAbs << ", mean same-plane error=" << meanAbs << "\n";
 		for (size_t n = 0; n < std::min<size_t>(20, mismatches.size()); ++n) { const size_t index = mismatches[n]; const uint32_t x = static_cast<uint32_t>(index % scaledWidth), y = static_cast<uint32_t>(index / scaledWidth); const uint32_t rx = static_cast<uint32_t>((static_cast<size_t>(x) * refWidth) / scaledWidth), ry = static_cast<uint32_t>((static_cast<size_t>(y) * refHeight) / scaledHeight); const auto cp = std::isfinite(cpuDepthMap.m_depthValues[index]) && cpuDepthMap.m_depthValues[index] > 0.0f ? closestPlane(cpuDepthMap.m_depthValues[index]) : std::pair<uint32_t, bool>{UINT32_MAX, false}; const auto gp = std::isfinite(gpuDepth[index]) && gpuDepth[index] > 0.0f ? closestPlane(gpuDepth[index]) : std::pair<uint32_t, bool>{UINT32_MAX, false}; const size_t sampleIndex = static_cast<size_t>(y / pointStep) * gridWidth + x / pointStep; report << "Mismatch " << n << ": depthIndex=" << index << ", scaled=(" << x << "," << y << "), reference=(" << rx << "," << ry << "), CPU=" << cpuDepthMap.m_depthValues[index] << ", GPU=" << gpuDepth[index] << ", CPU valid=" << (cp.first != UINT32_MAX) << ", GPU valid=" << (gp.first != UINT32_MAX) << ", CPU plane=" << cp.first << ", GPU plane=" << gp.first; if (x % pointStep == 0 && y % pointStep == 0 && sampleIndex < gpuStatuses.size()) { report << ", GPU status=" << gpuStatuses[sampleIndex]; const float stdDev = FloatFromBits(gpuTextureTrace[sampleIndex * textureTraceStride + 9u]); report << ", GPU textureStdDev=" << stdDev; } report << "\n"; }
 		UIUtility::Print(report.str());
-		if (stats) { stats->m_totalDepthEntries = entryCount; stats->m_meaningfulSamples = sampleCount; stats->m_cpuAccepted = cpuPositive; stats->m_gpuAccepted = gpuPositive; stats->m_bothInvalid = bothInvalid; stats->m_cpuOnlyValid = cpuOnly; stats->m_gpuOnlyValid = gpuOnly; stats->m_samePlanePositive = samePlane; stats->m_differentPlane = differentPlane; stats->m_unsampledEntries = unsampled; stats->m_unsampledZeroMatches = unsampledZeroMatches; stats->m_gpuNonFinite = gpuNonfinite; stats->m_classificationMismatches = classificationMismatches; stats->m_maximumAbsoluteError = maxAbs; stats->m_maximumRelativeError = maxRel; stats->m_meanAbsoluteError = meanAbs; stats->m_uploadSetupMilliseconds = setupMs; stats->m_dispatchMilliseconds = dispatchMs; stats->m_readbackComparisonMilliseconds = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - compareStart).count(); stats->m_cpuBuildMilliseconds = cpuBuildMilliseconds; stats->m_succeeded = success; }
-		cleanup(); return success;
+		if (stats) { stats->m_totalDepthEntries = entryCount; stats->m_meaningfulSamples = sampleCount; stats->m_cpuAccepted = cpuPositive; stats->m_gpuAccepted = gpuPositive; stats->m_bothInvalid = bothInvalid; stats->m_cpuOnlyValid = cpuOnly; stats->m_gpuOnlyValid = gpuOnly; stats->m_samePlanePositive = samePlane; stats->m_differentPlane = differentPlane; stats->m_unsampledEntries = unsampled; stats->m_unsampledZeroMatches = unsampledZeroMatches; stats->m_gpuNonFinite = gpuNonfinite; stats->m_classificationMismatches = classificationMismatches; stats->m_maximumAbsoluteError = maxAbs; stats->m_maximumRelativeError = maxRel; stats->m_meanAbsoluteError = meanAbs; stats->m_uploadSetupMilliseconds = setupMs; stats->m_dispatchMilliseconds = dispatchMs; stats->m_readbackComparisonMilliseconds = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - compareStart).count(); stats->m_cpuBuildMilliseconds = cpuBuildMilliseconds; stats->m_succeeded = true; }
+		cleanup(); return true;
 	}
-	catch (const std::exception &ex) { cleanup(); UIUtility::Print(std::string("Phase 2P-B GPU comparison stopped for reference ") + std::to_string(referenceId) + " " + referenceName + ": " + ex.what() + ". Dimensions=" + std::to_string(scaledWidth) + "x" + std::to_string(scaledHeight) + ", sampleGrid=" + std::to_string(gridWidth) + "x" + std::to_string(gridHeight) + ", planeCount=" + std::to_string(params.m_planeCount) + ", sourceCount=" + std::to_string(sourceImages.size()) + ", patchRadius=" + std::to_string(params.m_patchRadius) + ", workload=" + std::to_string(workload) + "\n"); if (stats) { stats->m_totalDepthEntries = entryCount; stats->m_meaningfulSamples = sampleCount; stats->m_readbackComparisonMilliseconds = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - gpuSetupStart).count() - stats->m_uploadSetupMilliseconds - stats->m_dispatchMilliseconds; stats->m_cpuBuildMilliseconds = cpuBuildMilliseconds; stats->m_succeeded = false; } return false; }
+	catch (const std::exception &ex) { cleanup(); UIUtility::Print(std::string("PlaneSweep GPU execution failed for reference ") + std::to_string(referenceId) + " " + referenceName + ": " + ex.what() + ". Dimensions=" + std::to_string(scaledWidth) + "x" + std::to_string(scaledHeight) + ", sampleGrid=" + std::to_string(gridWidth) + "x" + std::to_string(gridHeight) + ", planeCount=" + std::to_string(params.m_planeCount) + ", sourceCount=" + std::to_string(sourceImages.size()) + ", patchRadius=" + std::to_string(params.m_patchRadius) + ", workload=" + std::to_string(workload) + "\n"); if (stats) { stats->m_totalDepthEntries = entryCount; stats->m_meaningfulSamples = sampleCount; stats->m_readbackComparisonMilliseconds = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - gpuSetupStart).count() - stats->m_uploadSetupMilliseconds - stats->m_dispatchMilliseconds; stats->m_cpuBuildMilliseconds = cpuBuildMilliseconds; stats->m_failureReason = ex.what(); stats->m_succeeded = false; } return false; }
 }
 
 void PlaneSweepGpu::Clean(void)

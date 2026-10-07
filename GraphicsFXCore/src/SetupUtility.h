@@ -134,6 +134,23 @@ namespace graphicsFX
         Float4 m_lightMarkerColor{ 1.0f, 0.95f, 0.2f, 1.0f }; //Stores the light marker color.
     };
 
+    enum class PlaneSweepExecutionMode
+    {
+        CpuOnly,
+        Gpu,
+        CpuGpuCompare
+    };
+
+    inline const char *PlaneSweepExecutionModeName(PlaneSweepExecutionMode mode)
+    {
+        switch (mode)
+        {
+        case PlaneSweepExecutionMode::Gpu: return "GPU";
+        case PlaneSweepExecutionMode::CpuGpuCompare: return "CPU_GPU_COMPARE";
+        default: return "CPU_ONLY";
+        }
+    }
+
     //Stores COLMAP camera visualization settings.
     struct ColmapSetup
     {
@@ -154,6 +171,7 @@ namespace graphicsFX
         int m_displayEveryNthPoint{ 1 }; //Stores the sparse point cloud sampling interval.
         int m_displayEveryNthPixel{ 50 }; //Stores the depth point cloud pixel sampling interval.
         bool m_planeSweepEnabled{ true }; //Stores whether plane sweep reconstruction is enabled.
+        PlaneSweepExecutionMode m_planeSweepExecutionMode{ PlaneSweepExecutionMode::CpuOnly }; //Stores the PlaneSweep depth-search execution mode.
         int m_planeSweepReferenceStep{ 10 }; //Stores the plane sweep reference camera sampling interval.
         int m_planeSweepSourceCount{ 4 }; //Stores number of source cameras used per reference camera.
         int m_planeSweepPlaneCount{ 96 }; //Stores number of swept inverse-depth planes.
