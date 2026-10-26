@@ -94,6 +94,9 @@ namespace graphicsFX
             //Applies a string setup value.
             static void ApplyString(const SetupMap &values, const std::string &key, std::string &target);
 
+            //Applies a patch cost method name, preserving the default for unknown names.
+            static void ApplyPatchCostMethod(const SetupMap &values, const std::string &key, PatchCostMethod &target);
+
             //Applies a four component float setup value.
             static void ApplyFloat4(const SetupMap &values, const std::string &key, Float4 &target, float minimum, float maximum);
 
@@ -579,6 +582,39 @@ namespace graphicsFX
             }
         }
 
+        //Applies a patch cost method name, preserving the default for unknown names.
+        void SetupFileUtility::ApplyPatchCostMethod(
+            const SetupMap &values,
+            const std::string &key,
+            PatchCostMethod &target)
+        {
+            const auto found = values.find(key);
+            if (found == values.end())
+            {
+                return;
+            }
+
+            std::string name = NormalizeName(found->second);
+            const std::string prefix = "PATCHCOSTMETHOD";
+            if (name.compare(0U, prefix.size(), prefix) == 0)
+            {
+                name.erase(0U, prefix.size());
+            }
+
+            if (name == "MEANABSOLUTEDIFFERENCE")
+                target = PatchCostMethod::PatchCostMethodMeanAbsoluteDifference;
+            else if (name == "NORMALIZEDCROSSCORRELATION")
+                target = PatchCostMethod::PatchCostMethodNormalizedCrossCorrelation;
+            else if (name == "ZEROMEANNORMALIZEDCROSSCORRELATION")
+                target = PatchCostMethod::PatchCostMethodZeroMeanNormalizedCrossCorrelation;
+            else if (name == "RANKTRANSFORM")
+                target = PatchCostMethod::PatchCostMethodRankTransform;
+            else if (name == "CENSUSTRANSFORM")
+                target = PatchCostMethod::PatchCostMethodCensusTransform;
+            else if (name == "ADCENSUS")
+                target = PatchCostMethod::PatchCostMethodADCensus;
+        }
+
         //Applies a color setup value.
         void SetupFileUtility::ApplyFloat4(const SetupMap &values, const std::string &key, Float4 &target, float minimum, float maximum)
         {
@@ -757,6 +793,9 @@ namespace graphicsFX
         ApplyInt(values, "COLMAP.PLANESWEEPPLANECOUNT", setup.m_colmap.m_planeSweepPlaneCount, 2, 4096);
         ApplyFloat(values, "COLMAP.PLANESWEEPIMAGESCALE", setup.m_colmap.m_planeSweepImageScale, 0.01f, 1.0f);
         ApplyInt(values, "COLMAP.PLANESWEEPPATCHRADIUS", setup.m_colmap.m_planeSweepPatchRadius, 0, 16);
+        ApplyPatchCostMethod(values, "COLMAP.PLANESWEEPPATCHCOSTMETHOD", setup.m_colmap.m_planeSweepPatchCostMethod);
+        ApplyFloat(values, "COLMAP.PLANESWEEPADCENSUSWEIGHT", setup.m_colmap.m_planeSweepADCensusWeight, 0.0f, 1.0f);
+        ApplyBool(values, "COLMAP.PLANESWEEPUSEHOMOGRAPHYWARPING", setup.m_colmap.m_planeSweepUseHomographyWarping);
         ApplyInt(values, "COLMAP.PLANESWEEPMINVALIDSOURCEVIEWS", setup.m_colmap.m_planeSweepMinValidSourceViews, 1, 128);
         ApplyFloat(values, "COLMAP.PLANESWEEPCOSTTHRESHOLD", setup.m_colmap.m_planeSweepCostThreshold, 0.0f, 10.0f);
         ApplyFloat(values, "COLMAP.PLANESWEEPALPHATHRESHOLD", setup.m_colmap.m_planeSweepAlphaThreshold, 0.0f, 1.0f);

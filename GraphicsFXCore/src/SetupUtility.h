@@ -134,6 +134,17 @@ namespace graphicsFX
         Float4 m_lightMarkerColor{ 1.0f, 0.95f, 0.2f, 1.0f }; //Stores the light marker color.
     };
 
+    //Selects how reference and source image patches are compared.
+    enum class PatchCostMethod
+    {
+        PatchCostMethodMeanAbsoluteDifference,
+        PatchCostMethodNormalizedCrossCorrelation,
+        PatchCostMethodZeroMeanNormalizedCrossCorrelation,
+        PatchCostMethodRankTransform,
+        PatchCostMethodCensusTransform,
+        PatchCostMethodADCensus
+    };
+
     enum class PlaneSweepExecutionMode
     {
         CpuOnly,
@@ -171,12 +182,15 @@ namespace graphicsFX
         int m_displayEveryNthPoint{ 1 }; //Stores the sparse point cloud sampling interval.
         int m_displayEveryNthPixel{ 50 }; //Stores the depth point cloud pixel sampling interval.
         bool m_planeSweepEnabled{ true }; //Stores whether plane sweep reconstruction is enabled.
+        bool m_planeSweepUseHomographyWarping{ false }; //Enables undistorted homography warping for plane sweep.
         PlaneSweepExecutionMode m_planeSweepExecutionMode{ PlaneSweepExecutionMode::CpuOnly }; //Stores the PlaneSweep depth-search execution mode.
         int m_planeSweepReferenceStep{ 10 }; //Stores the plane sweep reference camera sampling interval.
         int m_planeSweepSourceCount{ 4 }; //Stores number of source cameras used per reference camera.
         int m_planeSweepPlaneCount{ 96 }; //Stores number of swept inverse-depth planes.
         float m_planeSweepImageScale{ 0.25f }; //Stores the image scale used for plane sweep.
         int m_planeSweepPatchRadius{ 1 }; //Stores the matching patch radius in pixels.
+        PatchCostMethod m_planeSweepPatchCostMethod{ PatchCostMethod::PatchCostMethodMeanAbsoluteDifference }; //Selects the patch matching method.
+        float m_planeSweepADCensusWeight{ 0.5f }; //Sets the Census weight in [0, 1] for AD-Census.
         int m_planeSweepMinValidSourceViews{ 2 }; //Stores minimum valid source views per depth sample.
         float m_planeSweepCostThreshold{ 0.18f }; //Stores maximum accepted matching cost.
         float m_planeSweepAlphaThreshold{ 0.01f }; //Stores maximum alpha treated as transparent.

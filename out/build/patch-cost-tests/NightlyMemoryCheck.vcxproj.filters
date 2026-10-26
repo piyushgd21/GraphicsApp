@@ -1,0 +1,17 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="18.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\out\build\patch-cost-tests\CMakeFiles\65081c180cb92d2c59b2dcc46adb6def\NightlyMemoryCheck.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\out\build\patch-cost-tests\CMakeFiles\NightlyMemoryCheck" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{878F7454-8698-35B7-85F6-1D940A5C8EB8}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

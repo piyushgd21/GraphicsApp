@@ -2059,6 +2059,150 @@ namespace graphicsFX
             return true;
         }
 
+        //Converts normalized RGB values into grayscale intensity.
+        float MultiViewUtility::MultiViewPlaneSweepUtility::ComputePatchGrayscale(const Float4 &color)
+        {
+            return (color.x * 0.299f) + (color.y * 0.587f) + (color.z * 0.114f);
+        }
+
+        //Compares intensities with tolerance for interpolation rounding.
+        bool MultiViewUtility::MultiViewPlaneSweepUtility::IsPatchIntensityDarker(
+            float intensity, float centerIntensity)
+        {
+            return intensity < centerIntensity - 1.0e-6f;
+        }
+
+        //Computes the fraction of valid local neighbors darker than the center.
+        bool MultiViewUtility::MultiViewPlaneSweepUtility::ComputeLocalRank(
+            const PlaneSweepImage &image,
+            float x, float y,
+            float centerIntensity,
+            int patchRadius,
+            float alphaThreshold,
+            int minimumOpaqueSamples,
+            float &rank)
+        {
+            int sampleCount = 1;
+            int darkerCount = 0;
+
+            for (int offsetY = -patchRadius; offsetY <= patchRadius; ++offsetY)
+            {
+                for (int offsetX = -patchRadius; offsetX <= patchRadius; ++offsetX)
+                {
+                    if (offsetX == 0 && offsetY == 0)
+                    {
+                        continue;
+                    }
+
+                    Float4 color;
+                    if (!SamplePlaneSweepPixel(
+                            image,
+                            x + static_cast<float>(offsetX),
+                            y + static_cast<float>(offsetY),
+                            color) ||
+                        color.w <= alphaThreshold)
+                    {
+                        continue;
+                    }
+
+                    darkerCount += IsPatchIntensityDarker(
+                        ComputePatchGrayscale(color), centerIntensity) ? 1 : 0;
+                    ++sampleCount;
+                }
+            }
+
+            if (sampleCount < minimumOpaqueSamples || sampleCount <= 1)
+            {
+                return false;
+            }
+
+            rank = static_cast<float>(darkerCount) /
+                static_cast<float>(sampleCount - 1);
+            return true;
+        }
+
+        //Converts accumulated patch measurements into a matching cost.
+        bool MultiViewUtility::MultiViewPlaneSweepUtility::ComputePatchCost(
+            const PlaneSweepPatchStatistics &statistics,
+            PatchCostMethod method,
+            float adCensusWeight,
+            float &cost)
+        {
+            if (statistics.m_sampleCount <= 0)
+            {
+                return false;
+            }
+
+            switch (method)
+            {
+                case PatchCostMethod::PatchCostMethodMeanAbsoluteDifference:
+                    cost = statistics.m_absoluteDifference /
+                        static_cast<float>(statistics.m_sampleCount);
+                    break;
+
+                case PatchCostMethod::PatchCostMethodNormalizedCrossCorrelation:
+                case PatchCostMethod::PatchCostMethodZeroMeanNormalizedCrossCorrelation:
+                {
+                    double numerator = statistics.m_productSum;
+                    double referenceEnergy = statistics.m_referenceSquaredSum;
+                    double sourceEnergy = statistics.m_sourceSquaredSum;
+                    const bool zeroMean =
+                        method == PatchCostMethod::PatchCostMethodZeroMeanNormalizedCrossCorrelation;
+
+                    if (zeroMean)
+                    {
+                        const double count = static_cast<double>(statistics.m_sampleCount);
+                        numerator -= statistics.m_referenceSum * statistics.m_sourceSum / count;
+                        referenceEnergy -= statistics.m_referenceSum * statistics.m_referenceSum / count;
+                        sourceEnergy -= statistics.m_sourceSum * statistics.m_sourceSum / count;
+                    }
+
+                    if (referenceEnergy <= 1.0e-12 || sourceEnergy <= 1.0e-12)
+                    {
+                        return false;
+                    }
+
+                    const double correlation = std::clamp(
+                        numerator / std::sqrt(referenceEnergy * sourceEnergy),
+                        zeroMean ? -1.0 : 0.0, 1.0);
+                    cost = static_cast<float>((1.0 - correlation) * (zeroMean ? 0.5 : 1.0));
+                    break;
+                }
+
+                case PatchCostMethod::PatchCostMethodRankTransform:
+                    cost = statistics.m_rankDifference /
+                        static_cast<float>(statistics.m_sampleCount);
+                    break;
+
+                case PatchCostMethod::PatchCostMethodCensusTransform:
+                case PatchCostMethod::PatchCostMethodADCensus:
+                {
+                    const float weight =
+                        method == PatchCostMethod::PatchCostMethodCensusTransform
+                        ? 1.0f : std::clamp(adCensusWeight, 0.0f, 1.0f);
+
+                    if (weight > 0.0f && statistics.m_censusSampleCount <= 0)
+                    {
+                        return false;
+                    }
+
+                    const float censusCost = statistics.m_censusSampleCount > 0
+                        ? static_cast<float>(statistics.m_censusDifferenceCount) /
+                            static_cast<float>(statistics.m_censusSampleCount)
+                        : 0.0f;
+                    const float absoluteCost = statistics.m_absoluteDifference /
+                        static_cast<float>(statistics.m_sampleCount);
+                    cost = ((1.0f - weight) * absoluteCost) + (weight * censusCost);
+                    break;
+                }
+
+                default:
+                    return false;
+            }
+
+            return std::isfinite(cost);
+        }
+
         //Computes the matching cost for one depth plane.
         bool MultiViewUtility::MultiViewPlaneSweepUtility::ComputePlaneCost(
             const PlaneSweepImage &referenceImage,
@@ -2070,6 +2214,8 @@ namespace graphicsFX
             int minValidSourceViews,
             float alphaThreshold,
             float minimumOpaquePatchRatio,
+            PatchCostMethod patchCostMethod,
+            float adCensusWeight,
             float &cost
         )
         {
@@ -2078,6 +2224,29 @@ namespace graphicsFX
             const int patchWidth = (patchRadius * 2) + 1;
             const int patchArea = patchWidth * patchWidth;
             const int minimumOpaqueSamples = std::max(1, static_cast<int>(std::ceil(static_cast<float>(patchArea) * minimumOpaquePatchRatio)));
+
+            const bool usesCorrelation =
+                patchCostMethod == PatchCostMethod::PatchCostMethodNormalizedCrossCorrelation ||
+                patchCostMethod == PatchCostMethod::PatchCostMethodZeroMeanNormalizedCrossCorrelation;
+            const bool usesRank =
+                patchCostMethod == PatchCostMethod::PatchCostMethodRankTransform;
+            const bool usesCensus =
+                patchCostMethod == PatchCostMethod::PatchCostMethodCensusTransform ||
+                (patchCostMethod == PatchCostMethod::PatchCostMethodADCensus &&
+                 adCensusWeight > 0.0f);
+
+            float referenceCenterIntensity = 0.0f;
+            if (usesCensus)
+            {
+                Float4 referenceCenterColor;
+                if (!SamplePlaneSweepPixel(referenceImage, x, y, referenceCenterColor) ||
+                    referenceCenterColor.w <= alphaThreshold)
+                {
+                    return false;
+                }
+
+                referenceCenterIntensity = ComputePatchGrayscale(referenceCenterColor);
+            }
 
             // Check whether instrumentation is active for this reference pixel
             const bool instrument = g_debugContext.enabled && g_debugContext.refImageId == static_cast<int>(referenceImage.m_camera.m_imageId) &&
@@ -2100,7 +2269,31 @@ namespace graphicsFX
                 float sourceIndividualCost = 0.0f;
                 std::string rejectionReason = "";
 
-                for (int patchY = -patchRadius; patchY <= patchRadius; ++patchY)
+                PlaneSweepPatchStatistics statistics;
+                float sourceCenterIntensity = 0.0f;
+                bool sourceCenterValid = true;
+                if (usesCensus)
+                {
+                    const Float3 centerPoint = UnprojectPixel(
+                        referenceImage.m_camera, referenceImage.m_intrinsic, x, y, depth);
+                    float centerX = 0.0f;
+                    float centerY = 0.0f;
+                    float centerDepth = 0.0f;
+                    Float4 centerColor;
+
+                    sourceCenterValid =
+                        ProjectPoint(sourceImage.m_camera, sourceImage.m_intrinsic,
+                            centerPoint, centerX, centerY, centerDepth) &&
+                        SamplePlaneSweepPixel(sourceImage, centerX, centerY, centerColor) &&
+                        centerColor.w > alphaThreshold;
+
+                    if (sourceCenterValid)
+                    {
+                        sourceCenterIntensity = ComputePatchGrayscale(centerColor);
+                    }
+                }
+
+                for (int patchY = -patchRadius; sourceCenterValid && patchY <= patchRadius; ++patchY)
                 {
                     for (int patchX = -patchRadius; patchX <= patchRadius; ++patchX)
                     {
@@ -2144,23 +2337,76 @@ namespace graphicsFX
 
                         ++patchSamplesSourceOpaque;
 
+                        const float referenceIntensity = usesCorrelation || usesRank || usesCensus
+                            ? ComputePatchGrayscale(referenceColor) : 0.0f;
+                        const float sourceIntensity = usesCorrelation || usesRank || usesCensus
+                            ? ComputePatchGrayscale(sourceColor) : 0.0f;
+
+                        if (usesRank)
+                        {
+                            float referenceRank = 0.0f;
+                            float sourceRank = 0.0f;
+                            if (!ComputeLocalRank(
+                                    referenceImage, referenceX, referenceY, referenceIntensity,
+                                    patchRadius, alphaThreshold, minimumOpaqueSamples, referenceRank) ||
+                                !ComputeLocalRank(
+                                    sourceImage, sourceX, sourceY, sourceIntensity,
+                                    patchRadius, alphaThreshold, minimumOpaqueSamples, sourceRank))
+                            {
+                                continue;
+                            }
+
+                            statistics.m_rankDifference += std::fabs(referenceRank - sourceRank);
+                        }
+
+                        if (usesCorrelation)
+                        {
+                            const double referenceValue = static_cast<double>(referenceIntensity);
+                            const double sourceValue = static_cast<double>(sourceIntensity);
+                            statistics.m_referenceSum += referenceValue;
+                            statistics.m_sourceSum += sourceValue;
+                            statistics.m_referenceSquaredSum += referenceValue * referenceValue;
+                            statistics.m_sourceSquaredSum += sourceValue * sourceValue;
+                            statistics.m_productSum += referenceValue * sourceValue;
+                        }
+
+                        if (usesCensus && (patchX != 0 || patchY != 0))
+                        {
+                            const bool referenceBit =
+                                IsPatchIntensityDarker(referenceIntensity, referenceCenterIntensity);
+                            const bool sourceBit =
+                                IsPatchIntensityDarker(sourceIntensity, sourceCenterIntensity);
+                            statistics.m_censusDifferenceCount += referenceBit != sourceBit ? 1 : 0;
+                            ++statistics.m_censusSampleCount;
+                        }
+
                         const float delta = (std::fabs(referenceColor.x - sourceColor.x) + std::fabs(referenceColor.y - sourceColor.y) + std::fabs(referenceColor.z - sourceColor.z)) / 3.0f;
-                        sourceCost += delta;
                         ++sampleCount;
+                        statistics.m_absoluteDifference += delta;
+                        ++statistics.m_sampleCount;
                     }
                 }
 
-                if (sampleCount >= minimumOpaqueSamples)
+                if (sampleCount >= minimumOpaqueSamples &&
+                    ComputePatchCost(statistics, patchCostMethod, adCensusWeight, sourceCost))
                 {
-                    totalCost += sourceCost / static_cast<float>(sampleCount);
+                    totalCost += sourceCost;
                     ++validSourceViews;
                     sourceContributed = true;
-                    sourceIndividualCost = sourceCost / static_cast<float>(sampleCount);
+                    sourceIndividualCost = sourceCost;
                 }
                 else
                 {
                     // Determine rejection reason using observed counters
-                    if (patchSamplesProjSuccess == 0)
+                    if (!sourceCenterValid)
+                    {
+                        rejectionReason = "invalidCensusCenter";
+                    }
+                    else if (sampleCount >= minimumOpaqueSamples)
+                    {
+                        rejectionReason = "undefinedPatchCost";
+                    }
+                    else if (patchSamplesProjSuccess == 0)
                     {
                         rejectionReason = "projectionFailed";
                     }
@@ -2597,7 +2843,7 @@ namespace graphicsFX
                             if (anchorCameraZ > 0.0f)
                             {
                                 float colmapCost = 0.0f;
-                                bool hasCost = MultiViewUtility::MultiViewPlaneSweepUtility::ComputePlaneCost(referenceImage, sourceImages, static_cast<float>(debugX), static_cast<float>(debugY), anchorCameraZ, patchRadius, std::max(1, std::min(static_cast<int>(sourceImages.size()), setup.m_planeSweepMinValidSourceViews)), alphaThreshold, minimumOpaquePatchRatio, colmapCost);
+                                bool hasCost = MultiViewUtility::MultiViewPlaneSweepUtility::ComputePlaneCost(referenceImage, sourceImages, static_cast<float>(debugX), static_cast<float>(debugY), anchorCameraZ, patchRadius, std::max(1, std::min(static_cast<int>(sourceImages.size()), setup.m_planeSweepMinValidSourceViews)), alphaThreshold, minimumOpaquePatchRatio, setup.m_planeSweepPatchCostMethod, setup.m_planeSweepADCensusWeight, colmapCost);
                                 {
                                     std::ostringstream s;
                                     s << "PlaneSweepDebug COLMAP depth cost: depth=" << anchorCameraZ << " cost=" << colmapCost << " hasCost=" << (hasCost ? "true" : "false") << "\n";
@@ -2746,7 +2992,7 @@ namespace graphicsFX
                     g_debugContext.minValidSourceViews = minValidSourceViews;
                 }
 
-                bool hasCost = ComputePlaneCost(referenceImage, sourceImages, static_cast<float>(debugX), static_cast<float>(debugY), depth, patchRadius, minValidSourceViews, alphaThreshold, minimumOpaquePatchRatio, cost);
+                bool hasCost = ComputePlaneCost(referenceImage, sourceImages, static_cast<float>(debugX), static_cast<float>(debugY), depth, patchRadius, minValidSourceViews, alphaThreshold, minimumOpaquePatchRatio, setup.m_planeSweepPatchCostMethod, setup.m_planeSweepADCensusWeight, cost);
 
                 if (hasCost && std::isfinite(cost))
                 {
@@ -3028,6 +3274,8 @@ namespace graphicsFX
                                 minValidSourceViews,
                                 alphaThreshold,
                                 minimumOpaquePatchRatio,
+                                setup.m_planeSweepPatchCostMethod,
+                                setup.m_planeSweepADCensusWeight,
                                 cost
                             );
                             const auto pcEnd = std::chrono::steady_clock::now();
@@ -3045,6 +3293,8 @@ namespace graphicsFX
                                 minValidSourceViews,
                                 alphaThreshold,
                                 minimumOpaquePatchRatio,
+                                setup.m_planeSweepPatchCostMethod,
+                                setup.m_planeSweepADCensusWeight,
                                 cost
                             );
                         }
@@ -3974,7 +4224,12 @@ namespace graphicsFX
                     std::vector<uint32_t> gpuSampleStatuses;
                     std::string fallbackReason;
                     bool gpuSucceeded = false;
-                    if (sourceImages.size() > MAX_PLANE_SWEEP_SOURCE_IMAGES)
+                    if (setup.m_planeSweepPatchCostMethod !=
+                        PatchCostMethod::PatchCostMethodMeanAbsoluteDifference)
+                    {
+                        fallbackReason = "selected patch cost method is not yet implemented on GPU";
+                    }
+                    else if (sourceImages.size() > MAX_PLANE_SWEEP_SOURCE_IMAGES)
                     {
                         fallbackReason = "source count " + std::to_string(sourceImages.size()) + " exceeds GPU maximum 8";
                         ++gpuTotals.m_unsupportedSources;

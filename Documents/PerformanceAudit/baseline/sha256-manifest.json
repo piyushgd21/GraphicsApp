@@ -1,0 +1,87 @@
+[
+  {
+    "Path": "GraphicsApp00/src/Scene.cpp",
+    "SHA256": "A9C9820CA6D65EFBD8CB2E3F651114B20BFABFA5061E2FAB55428368D0DD13FC",
+    "Bytes": 103505
+  },
+  {
+    "Path": "GraphicsFXCore/src/MultiViewUtility.cpp",
+    "SHA256": "39F42196F9BF2BE6137409AF057E72097CC503207E6C7AE82752ABECEACE1C57",
+    "Bytes": 239726
+  },
+  {
+    "Path": "GraphicsFXCore/src/MultiViewUtility.h",
+    "SHA256": "3BB4E008ECFF5B7F5735B288CEBECF4A8EF545514C7DC9DD40492A2E64871DB8",
+    "Bytes": 34021
+  },
+  {
+    "Path": "GraphicsFXCore/src/PlaneSweepGpu.cpp",
+    "SHA256": "10FB5A0CF8231FDF861FCB74C80E63534A8E7E8C6B55857EE0B50146889352A8",
+    "Bytes": 421353
+  },
+  {
+    "Path": "GraphicsFXCore/include/PlaneSweepGpu.h",
+    "SHA256": "476382F2CCDB399B22738A7BB0A0A7F571D39A5EDA4BFC364A731D9B5CBBBB6C",
+    "Bytes": 8386
+  },
+  {
+    "Path": "GraphicsFXCore/include/PlaneSweepGpuTypes.h",
+    "SHA256": "B5A4ACA310F6F29BA00669EA10A00C1A30910DA85AC367312141A118473F33A1",
+    "Bytes": 8927
+  },
+  {
+    "Path": "GraphicsFXCore/src/SetupUtility.cpp",
+    "SHA256": "98E5DAB9195DF382FCF9054BE87EB2F8C12FD6DEFEC52525E888535BA508F398",
+    "Bytes": 41260
+  },
+  {
+    "Path": "GraphicsFXCore/src/SetupUtility.h",
+    "SHA256": "87D48D9D86B59ACA6C950C0E03708DF4A385E149DC69A05D253F9AF8AE286CB3",
+    "Bytes": 20628
+  },
+  {
+    "Path": "GraphicsFXCore/src/ShaderUtility.cpp",
+    "SHA256": "3BEC0516DEAD502FC6E069D41AC7F5F51CE9783913F8C01C0C8CD1EEDA88C7A8",
+    "Bytes": 12752
+  },
+  {
+    "Path": "GraphicsFXCore/src/TextureUtility.cpp",
+    "SHA256": "BA0E749DC4F441D9CBE0519D250F72B2BA0BFA3F6527275CEC3D22459176D3BF",
+    "Bytes": 13890
+  },
+  {
+    "Path": "Shaders/planeSweepDepthMapSmokeTest.comp",
+    "SHA256": "8B406CB05DCE3E4681163F391A9A11EDCD01C0F4A350D53163066B91C10041CC",
+    "Bytes": 20075
+  },
+  {
+    "Path": "Shaders/planeSweepDepthMapSmokeTest.comp.spv",
+    "SHA256": "643211CF50955210CF3821BE72C513F40C1012AF8198B36843626302C58A55B6",
+    "Bytes": 47276
+  },
+  {
+    "Path": "Output/Shaders/planeSweepDepthMapSmokeTest.comp.spv",
+    "SHA256": "9ACA701FBE85A36ADE2382B5CE6A7D5AF8DA81D2A36456F1B189D6EC1E73582E",
+    "Bytes": 49540
+  },
+  {
+    "Path": "GraphicsApp00/setup/setup.ini",
+    "SHA256": "84105166870170032EA5B24EF7D99A414E249910DB2C0B1C4ECDF6A35CBE291C",
+    "Bytes": 16154
+  },
+  {
+    "Path": "bin/x64/Debug/GraphicsApp00.exe",
+    "SHA256": "E4900E870CDB7C0795AB3A65515F9E6B74D7F50B1A1F6910B385D39F50E63018",
+    "Bytes": 4914688
+  },
+  {
+    "Path": "build/phase2pb-normal-x64/GraphicsApp00.exe",
+    "SHA256": "CE97B81DF5B52CF2D527DFA593B52D14792581C8C41F27A7AE9C668E266A1A69",
+    "Bytes": 809984
+  },
+  {
+    "Path": "build/phase2pb-trace-x64/GraphicsApp00.exe",
+    "SHA256": "8A4C9B6E9E0D7528C3072976146059BE5D79FB8E4BCDD05254F9089C09F86A04",
+    "Bytes": 818176
+  }
+]

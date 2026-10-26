@@ -1,0 +1,27 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="18.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsApp00\src\WinMain.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsApp00\src\Scene.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsApp00\src\Scene.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{BD8F0AF9-A927-3756-900B-F9040CB1FC54}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{502341BD-683D-3B0C-88BF-E9E4227D78F9}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

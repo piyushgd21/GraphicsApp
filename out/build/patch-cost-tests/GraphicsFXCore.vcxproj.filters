@@ -1,0 +1,159 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="18.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\Camera.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\EngineCore.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\GaussianSplatStreamLoader.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\GaussianSplatUtility.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\GraphicsUtility.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\PlaneSweepGpu.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\InputUtility.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\MultiViewUtility.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\OpenXRUtility.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\PathUtility.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\SceneObject.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\SetupUtility.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\ShaderUtility.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\StringUtility.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\TextureUtility.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\UIUtility.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\WindowsUtility.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\Window.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\Camera.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\EngineCore.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\GaussianSplatStreamLoader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\GaussianSplatUtility.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\GraphicsUtility.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\global.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\InputUtility.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\MathUtility.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\MultiViewUtility.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\OpenXRUtility.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\PathUtility.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\RenderTypes.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\SceneInterface.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\SceneObject.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\SceneObjectAxis.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\SceneObjectBox.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\SceneObjectGrid.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\SceneObjectGridPlane.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\SceneObjectGaussianSplat.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\SceneObjectPointCloud.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\SceneObjectPyramid.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\SceneObjectSphere.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\SetupUtility.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\ShaderUtility.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\StringUtility.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\TextureUtility.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\UIUtility.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\WindowsUtility.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\GraphicsFXCore\src\Window.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{BD8F0AF9-A927-3756-900B-F9040CB1FC54}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{502341BD-683D-3B0C-88BF-E9E4227D78F9}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

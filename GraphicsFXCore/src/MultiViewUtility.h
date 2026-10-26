@@ -477,6 +477,21 @@ namespace graphicsFX
                         std::size_t m_cameraIndex{ 0U }; //Stores the source camera index.
                     };
 
+                    //Accumulates measurements for the selected patch cost method.
+                    struct PlaneSweepPatchStatistics
+                    {
+                        int m_sampleCount{ 0 }; //Valid matching pixel pairs.
+                        float m_absoluteDifference{ 0.0f }; //Sum of RGB absolute differences.
+                        double m_referenceSum{ 0.0 }; //Reference grayscale sum.
+                        double m_sourceSum{ 0.0 }; //Source grayscale sum.
+                        double m_referenceSquaredSum{ 0.0 }; //Reference grayscale squared sum.
+                        double m_sourceSquaredSum{ 0.0 }; //Source grayscale squared sum.
+                        double m_productSum{ 0.0 }; //Sum of paired grayscale products.
+                        float m_rankDifference{ 0.0f }; //Sum of normalized rank differences.
+                        int m_censusSampleCount{ 0 }; //Comparisons excluding the patch center.
+                        int m_censusDifferenceCount{ 0 }; //Differing Census comparisons.
+                    };
+
                     //Stores one plane sweep depth range.
                     struct PlaneSweepDepthRange
                     {
@@ -589,6 +604,29 @@ namespace graphicsFX
                     //Samples one plane sweep image with its optional mask.
                     static bool SamplePlaneSweepPixel(const PlaneSweepImage &image, float x, float y, Float4 &color);
 
+                    //Converts normalized RGB values into grayscale intensity.
+                    static float ComputePatchGrayscale(const Float4 &color);
+
+                    //Compares intensities with tolerance for interpolation rounding.
+                    static bool IsPatchIntensityDarker(float intensity, float centerIntensity);
+
+                    //Computes the fraction of valid local neighbors darker than the center.
+                    static bool ComputeLocalRank(
+                        const PlaneSweepImage &image,
+                        float x, float y,
+                        float centerIntensity,
+                        int patchRadius,
+                        float alphaThreshold,
+                        int minimumOpaqueSamples,
+                        float &rank);
+
+                    //Converts accumulated patch measurements into a matching cost.
+                    static bool ComputePatchCost(
+                        const PlaneSweepPatchStatistics &statistics,
+                        PatchCostMethod method,
+                        float adCensusWeight,
+                        float &cost);
+
                     //Computes grayscale patch texture variation.
                     static bool ComputeTextureStandardDeviation(
                         const PlaneSweepImage &referenceImage,
@@ -610,6 +648,8 @@ namespace graphicsFX
                         int minValidSourceViews,
                         float alphaThreshold,
                         float minimumOpaquePatchRatio,
+                        PatchCostMethod patchCostMethod,
+                        float adCensusWeight,
                         float &cost
                     );
 

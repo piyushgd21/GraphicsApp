@@ -1,0 +1,34 @@
+{
+  "audit_date": "2026-10-23",
+  "git_head": "673f898fc2812df4b0a78dc6bc1b99cddc840d89",
+  "method": "Source inspection, arithmetic, existing artifact inspection, PNG header inspection, three decoded alpha checks, Vulkan capability inspection. No reconstruction benchmark executed.",
+  "gpu": {"name": "NVIDIA GeForce RTX 4090", "driver": "617.42", "memory_total_mib_reported_by_nvidia_smi": 24564},
+  "vulkan": {"maxStorageBufferRange": 4294967295, "maxComputeWorkGroupInvocations": 1024, "timestampComputeAndGraphics": true, "timestampPeriod_ns": 1, "enumerated_queue_family_timestampValidBits": [64,64,64,32,32,64]},
+  "current_input_folder": "C:/Users/pdeshpa1/Documents/frame_00000_full/Input",
+  "current_mask_folder": "C:/Users/pdeshpa1/Documents/frame_00000_full/Mask",
+  "input_png_headers": {"count": 300, "all_width": 4032, "all_height": 3040},
+  "mask_folder_file_count": 300,
+  "mask_folder_recheck": {"png_count": 300, "direct_file_count_including_hidden": 300, "recursive_file_count_including_hidden": 300, "registered_image_names_checked": 299, "registered_images_missing_same_name_mask": 0, "correction": "Initial enumeration returned zero and was not corroborated. Recheck found 300 PNGs. Cause of discrepancy is unestablished. RGB alpha checks alone do not determine rejection when masks are loaded."},
+  "colmap_headers": {"registered_images": 299, "intrinsic_records": 299, "sparse_points": 71079, "mean_track_length": 4.2424626120232416},
+  "decoded_alpha_checks": [
+    {"file": "img_000.png", "pixels": 12257280, "alpha_above_2": 12257280, "alpha_zero": 0},
+    {"file": "img_149.png", "pixels": 12257280, "alpha_above_2": 12257280, "alpha_zero": 0},
+    {"file": "img_298.png", "pixels": 12257280, "alpha_above_2": 12257280, "alpha_zero": 0}
+  ],
+  "current_effective_settings": {
+    "execution_mode": "GPU", "image_scale": 0.39, "plane_count": 48,
+    "source_count": 4, "reference_step": 1, "point_step": 1, "patch_radius": 2,
+    "min_valid_sources": 2, "alpha_threshold": 0.01, "minimum_opaque_patch_ratio": 0.75,
+    "cost_threshold": 0.14, "confidence_enabled": true, "confidence_minimum_difference": 0.02,
+    "texture_rejection_enabled": false, "cross_view_enabled": true, "cross_view_count": 4,
+    "cross_view_minimum_views": 3, "cross_view_relative_depth_tolerance": 0.05,
+    "point_fusion_enabled": false, "outlier_filter_enabled": false, "save_depth": true,
+    "scaled_width": 1572, "scaled_height": 1186
+  },
+  "shader_sha256": {
+    "Shaders/planeSweepDepthMapSmokeTest.comp.spv": "643211CF50955210CF3821BE72C513F40C1012AF8198B36843626302C58A55B6",
+    "Output/Shaders/planeSweepDepthMapSmokeTest.comp.spv": "9ACA701FBE85A36ADE2382B5CE6A7D5AF8DA81D2A36456F1B189D6EC1E73582E",
+    "audit_recompilation_of_current_glsl": "9ACA701FBE85A36ADE2382B5CE6A7D5AF8DA81D2A36456F1B189D6EC1E73582E"
+  },
+  "historical_one_hour_run": {"configuration_available": false, "console_summary_available": false, "timing_source": "user-reported"}
+}

@@ -100,3 +100,19 @@ add_custom_command(TARGET GraphicsApp00 POST_BUILD
     COMMENT "Copying OpenXR loader beside the executable"
     VERBATIM
 )
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(PlaneSweepPatchCostTests
+        Tests/PlaneSweepPatchCostTests.cpp
+    )
+    target_link_libraries(PlaneSweepPatchCostTests PRIVATE GraphicsFXCore)
+    if(MSVC)
+        target_compile_options(PlaneSweepPatchCostTests PRIVATE /W4 /WX)
+    endif()
+    add_test(
+        NAME PlaneSweepPatchCosts
+        COMMAND PlaneSweepPatchCostTests
+            "${CMAKE_CURRENT_BINARY_DIR}/Testing/PatchCosts"
+    )
+endif()
