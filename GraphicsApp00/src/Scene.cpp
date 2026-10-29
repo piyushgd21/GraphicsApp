@@ -1164,7 +1164,8 @@ void Scene::DrawColmap(const ProgramSetup &programSetup, const SceneObjectShader
                 m_sceneObjectContext.m_devicePtrGPU,
                 m_sceneObjectContext.m_physicalDevicePtrGPU,
                 m_sceneObjectContext.m_graphicsQueuePtrGPU,
-                m_sceneObjectContext.m_commandPoolPtrGPU
+                m_sceneObjectContext.m_commandPoolPtrGPU,
+                m_sceneObjectContext.m_shaderFloat64Enabled
             );
             planeSweepGpuPtr = &planeSweepGpu;
         }

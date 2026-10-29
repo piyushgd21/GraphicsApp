@@ -1,0 +1,36 @@
+# CMake generated Testfile for 
+# Source directory: C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master
+# Build directory: C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean
+# 
+# This file includes the relevant testing commands required for 
+# testing this directory and lists subdirectories to be tested as well.
+if(CTEST_CONFIGURATION_TYPE MATCHES "^([Dd][Ee][Bb][Uu][Gg])$")
+  add_test([=[PlaneSweepPatchCosts]=] "C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean/Debug/PlaneSweepPatchCostTests.exe" "C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean/Testing/PatchCosts")
+  set_tests_properties([=[PlaneSweepPatchCosts]=] PROPERTIES  _BACKTRACE_TRIPLES "C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/CMakeLists.txt;113;add_test;C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/CMakeLists.txt;0;")
+elseif(CTEST_CONFIGURATION_TYPE MATCHES "^([Rr][Ee][Ll][Ee][Aa][Ss][Ee])$")
+  add_test([=[PlaneSweepPatchCosts]=] "C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean/Release/PlaneSweepPatchCostTests.exe" "C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean/Testing/PatchCosts")
+  set_tests_properties([=[PlaneSweepPatchCosts]=] PROPERTIES  _BACKTRACE_TRIPLES "C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/CMakeLists.txt;113;add_test;C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/CMakeLists.txt;0;")
+elseif(CTEST_CONFIGURATION_TYPE MATCHES "^([Mm][Ii][Nn][Ss][Ii][Zz][Ee][Rr][Ee][Ll])$")
+  add_test([=[PlaneSweepPatchCosts]=] "C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean/MinSizeRel/PlaneSweepPatchCostTests.exe" "C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean/Testing/PatchCosts")
+  set_tests_properties([=[PlaneSweepPatchCosts]=] PROPERTIES  _BACKTRACE_TRIPLES "C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/CMakeLists.txt;113;add_test;C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/CMakeLists.txt;0;")
+elseif(CTEST_CONFIGURATION_TYPE MATCHES "^([Rr][Ee][Ll][Ww][Ii][Tt][Hh][Dd][Ee][Bb][Ii][Nn][Ff][Oo])$")
+  add_test([=[PlaneSweepPatchCosts]=] "C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean/RelWithDebInfo/PlaneSweepPatchCostTests.exe" "C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean/Testing/PatchCosts")
+  set_tests_properties([=[PlaneSweepPatchCosts]=] PROPERTIES  _BACKTRACE_TRIPLES "C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/CMakeLists.txt;113;add_test;C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/CMakeLists.txt;0;")
+else()
+  add_test([=[PlaneSweepPatchCosts]=] NOT_AVAILABLE)
+endif()
+if(CTEST_CONFIGURATION_TYPE MATCHES "^([Dd][Ee][Bb][Uu][Gg])$")
+  add_test([=[PlaneSweepGpuPatchCosts]=] "C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean/Debug/PlaneSweepPatchCostTests.exe" "C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean/Testing/GpuPatchCosts" "--gpu")
+  set_tests_properties([=[PlaneSweepGpuPatchCosts]=] PROPERTIES  _BACKTRACE_TRIPLES "C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/CMakeLists.txt;137;add_test;C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/CMakeLists.txt;0;")
+elseif(CTEST_CONFIGURATION_TYPE MATCHES "^([Rr][Ee][Ll][Ee][Aa][Ss][Ee])$")
+  add_test([=[PlaneSweepGpuPatchCosts]=] "C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean/Release/PlaneSweepPatchCostTests.exe" "C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean/Testing/GpuPatchCosts" "--gpu")
+  set_tests_properties([=[PlaneSweepGpuPatchCosts]=] PROPERTIES  _BACKTRACE_TRIPLES "C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/CMakeLists.txt;137;add_test;C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/CMakeLists.txt;0;")
+elseif(CTEST_CONFIGURATION_TYPE MATCHES "^([Mm][Ii][Nn][Ss][Ii][Zz][Ee][Rr][Ee][Ll])$")
+  add_test([=[PlaneSweepGpuPatchCosts]=] "C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean/MinSizeRel/PlaneSweepPatchCostTests.exe" "C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean/Testing/GpuPatchCosts" "--gpu")
+  set_tests_properties([=[PlaneSweepGpuPatchCosts]=] PROPERTIES  _BACKTRACE_TRIPLES "C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/CMakeLists.txt;137;add_test;C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/CMakeLists.txt;0;")
+elseif(CTEST_CONFIGURATION_TYPE MATCHES "^([Rr][Ee][Ll][Ww][Ii][Tt][Hh][Dd][Ee][Bb][Ii][Nn][Ff][Oo])$")
+  add_test([=[PlaneSweepGpuPatchCosts]=] "C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean/RelWithDebInfo/PlaneSweepPatchCostTests.exe" "C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean/Testing/GpuPatchCosts" "--gpu")
+  set_tests_properties([=[PlaneSweepGpuPatchCosts]=] PROPERTIES  _BACKTRACE_TRIPLES "C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/CMakeLists.txt;137;add_test;C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/CMakeLists.txt;0;")
+else()
+  add_test([=[PlaneSweepGpuPatchCosts]=] NOT_AVAILABLE)
+endif()

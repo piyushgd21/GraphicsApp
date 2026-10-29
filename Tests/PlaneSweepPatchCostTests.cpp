@@ -8,6 +8,9 @@
 ///////////////////////////////////////////////////////////////////////
 
 #include "MultiViewUtility.h"
+#include "PlaneSweepGpu.h"
+#include "PlaneSweepGpuTypes.h"
+#include "PlaneSweepGpuTestContext.h"
 
 #include <array>
 #include <cmath>
@@ -18,6 +21,8 @@
 
 using namespace graphicsFX;
 
+using PlaneSweepUtility = MultiViewUtility::MultiViewPlaneSweepUtility;
+
 //Builds a textured plane at depth 2 and checks public reconstruction and setup APIs.
 class PlaneSweepPatchCostTests final
 {
@@ -25,9 +30,17 @@ class PlaneSweepPatchCostTests final
     public:
 
         //Runs a synthetic scene for each cost method and checks important invalid inputs.
-        static void Run(const std::filesystem::path &folder, bool useHomographyWarping);
+        static void Run(const std::filesystem::path &folder, bool useHomographyWarping,
+            PlaneSweepGpu *gpuPtr = nullptr);
 
     private:
+
+        //Compares production GPU output against the CPU depth map.
+        static void CompareGpu(
+            PlaneSweepGpu &gpu,
+            const ColmapSetup &setup,
+            const PlaneSweepUtility::PlaneSweepImage &referenceImage,
+            const std::vector<PlaneSweepUtility::PlaneSweepImage> &sourceImages);
 
         //Fails a test with a message even when assertions are disabled in Release builds.
         static void Require(bool condition, const std::string &message);
@@ -45,9 +58,11 @@ class PlaneSweepPatchCostTests final
         static void RequireCorrectDepth(const ColmapPlaneSweepResult &result, const std::string &message);
 
         static bool s_useHomographyWarping; //Selects whether the current test pass uses homography warping.
+        static PlaneSweepGpu *s_gpuPtr;
 };
 
 bool PlaneSweepPatchCostTests::s_useHomographyWarping = false;
+PlaneSweepGpu *PlaneSweepPatchCostTests::s_gpuPtr = nullptr;
 
 //Fails a test with a message even when assertions are disabled in Release builds.
 void PlaneSweepPatchCostTests::Require(bool condition, const std::string &message)
@@ -85,6 +100,71 @@ TextureData PlaneSweepPatchCostTests::MakeImage(bool neighbor, int gain, int off
     }
 
     return texture;
+}
+
+//Compares production GPU output against the CPU depth map.
+void PlaneSweepPatchCostTests::CompareGpu(
+    PlaneSweepGpu &gpu,
+    const ColmapSetup &setup,
+    const PlaneSweepUtility::PlaneSweepImage &referenceImage,
+    const std::vector<PlaneSweepUtility::PlaneSweepImage> &sourceImages)
+{
+    PlaneSweepUtility::PlaneSweepDepthRange depthRange;
+    depthRange.m_nearDepth = setup.m_planeSweepNearDepth;
+    depthRange.m_farDepth = setup.m_planeSweepFarDepth;
+
+    PlaneSweepUtility::PlaneSweepDepthMap cpuDepthMap;
+    std::vector<PlaneSweepUtility::PlaneSweepPointCandidate> candidates;
+    ColmapPlaneSweepResult cpuCounters;
+    PlaneSweepUtility::BuildReferencePoints(
+        setup, referenceImage, sourceImages, depthRange,
+        0U, cpuDepthMap, candidates, cpuCounters);
+
+    PlaneSweepGpuParams params{};
+    params.m_inverseNear = 1.0f / depthRange.m_nearDepth;
+    params.m_inverseFar = 1.0f / depthRange.m_farDepth;
+    params.m_planeCount = setup.m_planeSweepPlaneCount;
+    params.m_patchRadius = setup.m_planeSweepPatchRadius;
+    params.m_minValidSourceViews = setup.m_planeSweepMinValidSourceViews;
+    params.m_alphaThreshold = setup.m_planeSweepAlphaThreshold;
+    params.m_minimumOpaquePatchRatio = setup.m_planeSweepMinimumOpaquePatchRatio;
+    params.m_costThreshold = setup.m_planeSweepCostThreshold;
+    params.m_confidenceMinimumDifference =
+        setup.m_planeSweepConfidenceMinimumDifference;
+    params.m_textureMinimumStdDev = setup.m_planeSweepTextureMinimumStdDev;
+    params.m_sourceCount = static_cast<uint32_t>(sourceImages.size());
+    params.m_textureRejectionEnabled =
+        setup.m_planeSweepTextureRejectionEnabled ? 1U : 0U;
+    params.m_confidenceEnabled = setup.m_planeSweepConfidenceEnabled ? 1U : 0U;
+    params.m_pointStep = static_cast<uint32_t>(setup.m_planeSweepPointStep);
+    params.m_scaledWidth = cpuDepthMap.m_width;
+    params.m_scaledHeight = cpuDepthMap.m_height;
+    params.m_patchCostMethod =
+        static_cast<uint32_t>(setup.m_planeSweepPatchCostMethod);
+    params.m_adCensusWeight = setup.m_planeSweepADCensusWeight;
+
+    PlaneSweepUtility::PlaneSweepDepthMap gpuDepthMap;
+    std::vector<uint32_t> statuses;
+    PlaneSweepRealComparisonStats stats;
+    const bool succeeded = gpu.RunProductionDepthMap(
+        referenceImage, sourceImages, setup, params, depthRange,
+        cpuDepthMap, candidates, candidates.size(), cpuCounters,
+        0U, 0.0, true, gpuDepthMap, statuses, &stats);
+    Require(succeeded, "GPU dispatch failed: " + stats.m_failureReason);
+
+    Require(gpuDepthMap.m_depthValues.size() == cpuDepthMap.m_depthValues.size(),
+        "GPU depth-map size differs from CPU.");
+
+    for (std::size_t index = 0; index < cpuDepthMap.m_depthValues.size(); ++index)
+    {
+        const float expected = cpuDepthMap.m_depthValues[index];
+        const float actual = gpuDepthMap.m_depthValues[index];
+        const bool matches = std::isfinite(actual) &&
+            ((expected == 0.0f && actual == 0.0f) ||
+             (expected > 0.0f && actual > 0.0f &&
+              std::fabs(expected - actual) <= 0.00001f));
+        Require(matches, "GPU depth mismatch at pixel " + std::to_string(index));
+    }
 }
 
 //Runs the actual plane sweep with only the central patch fully inside both images.
@@ -137,6 +217,31 @@ ColmapPlaneSweepResult PlaneSweepPatchCostTests::Reconstruct(const std::filesyst
     setup.m_planeSweepPointFusionEnabled = false;
     setup.m_planeSweepOutlierFilterEnabled = false;
     setup.m_planeSweepSaveDepth = false;
+    const bool hasGpuMethod =
+        method == PatchCostMethod::PatchCostMethodMeanAbsoluteDifference ||
+        method == PatchCostMethod::PatchCostMethodRankTransform ||
+        method == PatchCostMethod::PatchCostMethodCensusTransform ||
+        method == PatchCostMethod::PatchCostMethodADCensus ||
+        (s_gpuPtr != nullptr && s_gpuPtr->ShaderFloat64Enabled() &&
+         (method == PatchCostMethod::PatchCostMethodNormalizedCrossCorrelation ||
+          method == PatchCostMethod::PatchCostMethodZeroMeanNormalizedCrossCorrelation));
+
+    if (s_gpuPtr != nullptr && hasGpuMethod)
+    {
+        PlaneSweepUtility::PlaneSweepImage referenceImage;
+        referenceImage.m_camera = cameras.m_cameras[0];
+        referenceImage.m_intrinsic = cameras.m_intrinsics[0];
+        referenceImage.m_texture = MakeImage(false, 1, 0, flat, false, false);
+
+        PlaneSweepUtility::PlaneSweepImage sourceImage;
+        sourceImage.m_camera = cameras.m_cameras[1];
+        sourceImage.m_intrinsic = cameras.m_intrinsics[0];
+        sourceImage.m_texture =
+            MakeImage(true, gain, offset, flat, masked, inverted);
+        sourceImage.m_cameraIndex = 1U;
+
+        CompareGpu(*s_gpuPtr, setup, referenceImage, { sourceImage });
+    }
     return MultiViewUtility::BuildColmapPlaneSweepPointCloud(cameras, setup);
 }
 
@@ -149,9 +254,11 @@ void PlaneSweepPatchCostTests::RequireCorrectDepth(const ColmapPlaneSweepResult 
 }
 
 //Runs a synthetic scene for each cost method and checks important invalid inputs.
-void PlaneSweepPatchCostTests::Run(const std::filesystem::path &folder, bool useHomographyWarping)
+void PlaneSweepPatchCostTests::Run(const std::filesystem::path &folder,
+    bool useHomographyWarping, PlaneSweepGpu *gpuPtr)
 {
     s_useHomographyWarping = useHomographyWarping;
+    s_gpuPtr = gpuPtr;
     std::filesystem::create_directories(folder);
     const std::array<PatchCostMethod, 6U> methods{
         PatchCostMethod::PatchCostMethodMeanAbsoluteDifference,
@@ -214,8 +321,45 @@ int main(int argc, char **argv)
 {
     try
     {
-        if (argc != 2) throw std::runtime_error("Expected a test output directory");
-        PlaneSweepPatchCostTests::Run(std::filesystem::absolute(argv[1]), false);
+        if (argc < 2 || argc > 3 ||
+            (argc == 3 && std::string(argv[2]) != "--gpu"))
+        {
+            throw std::runtime_error(
+                "Usage: PlaneSweepPatchCostTests <output-directory> [--gpu]");
+        }
+
+        const std::filesystem::path folder = std::filesystem::absolute(argv[1]);
+        if (argc == 3)
+        {
+            PlaneSweepGpuTestContext context;
+            context.Initialize();
+
+            PlaneSweepGpu gpu;
+            gpu.Initialize(context.m_device, context.m_physicalDevice,
+                context.m_queue, context.m_commandPool,
+                context.m_shaderFloat64Enabled);
+
+            VkPhysicalDeviceProperties properties{};
+            vkGetPhysicalDeviceProperties(context.m_physicalDevice, &properties);
+            std::cout << "GPU comparisons using: " << properties.deviceName << '\n';
+            std::cout << "GPU shaderFloat64 enabled: "
+                << (gpu.ShaderFloat64Enabled() ? "yes" : "no") << '\n';
+
+            PlaneSweepPatchCostTests::Run(folder, false, &gpu);
+            if (gpu.ShaderFloat64Enabled())
+            {
+                std::cout << "GPU comparisons passed for all six patch cost methods.\n";
+            }
+            else
+            {
+                std::cout << "GPU comparisons passed for MAD, Rank, Census, and AD-Census; "
+                             "NCC/ZNCC were tested on CPU only.\n";
+            }
+        }
+        else
+        {
+            PlaneSweepPatchCostTests::Run(folder, false);
+        }
         std::cout << "All plane sweep patch cost tests passed.\n";
         return 0;
     }

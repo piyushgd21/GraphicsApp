@@ -4225,7 +4225,17 @@ namespace graphicsFX
                     std::string fallbackReason;
                     bool gpuSucceeded = false;
                     if (setup.m_planeSweepPatchCostMethod !=
-                        PatchCostMethod::PatchCostMethodMeanAbsoluteDifference)
+                            PatchCostMethod::PatchCostMethodMeanAbsoluteDifference &&
+                        setup.m_planeSweepPatchCostMethod !=
+                            PatchCostMethod::PatchCostMethodNormalizedCrossCorrelation &&
+                        setup.m_planeSweepPatchCostMethod !=
+                            PatchCostMethod::PatchCostMethodZeroMeanNormalizedCrossCorrelation &&
+                        setup.m_planeSweepPatchCostMethod !=
+                            PatchCostMethod::PatchCostMethodRankTransform &&
+                        setup.m_planeSweepPatchCostMethod !=
+                            PatchCostMethod::PatchCostMethodCensusTransform &&
+                        setup.m_planeSweepPatchCostMethod !=
+                            PatchCostMethod::PatchCostMethodADCensus)
                     {
                         fallbackReason = "selected patch cost method is not yet implemented on GPU";
                     }
@@ -4241,6 +4251,16 @@ namespace graphicsFX
                     else if (planeSweepGpuPtr == nullptr)
                     {
                         fallbackReason = "PlaneSweepGpu is unavailable";
+                    }
+                    else if (
+                        (setup.m_planeSweepPatchCostMethod ==
+                             PatchCostMethod::PatchCostMethodNormalizedCrossCorrelation ||
+                         setup.m_planeSweepPatchCostMethod ==
+                             PatchCostMethod::PatchCostMethodZeroMeanNormalizedCrossCorrelation) &&
+                        !planeSweepGpuPtr->ShaderFloat64Enabled())
+                    {
+                        fallbackReason =
+                            "NCC/ZNCC GPU execution requires enabled shaderFloat64 support";
                     }
                     else
                     {
@@ -4264,6 +4284,8 @@ namespace graphicsFX
                         params.m_pointStep = static_cast<uint32_t>(pointStep);
                         params.m_scaledWidth = scaledWidth;
                         params.m_scaledHeight = scaledHeight;
+                        params.m_patchCostMethod = static_cast<uint32_t>(setup.m_planeSweepPatchCostMethod);
+                        params.m_adCensusWeight = std::clamp(setup.m_planeSweepADCensusWeight, 0.0f, 1.0f);
                         ColmapPlaneSweepResult cpuCounters{};
                         cpuCounters.m_pointsRejectedTexture = result.m_pointsRejectedTexture - textureRejectedBeforeReference;
                         cpuCounters.m_pointsRejectedConfidence = result.m_pointsRejectedConfidence - confidenceRejectedBeforeReference;

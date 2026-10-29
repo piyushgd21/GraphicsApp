@@ -52,8 +52,12 @@
 		<Build Solution="MinSizeRel|*" Project="false"/>
 		<Build Solution="RelWithDebInfo|*" Project="false"/>
 	</Project>
+	<Project Path="PlaneSweepPatchCostShader.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="cd516908-45cd-3420-8bb6-b25854690efe">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+	</Project>
 	<Project Path="PlaneSweepPatchCostTests.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="19d56cb0-bc80-37c6-a078-6f600d602979">
 		<BuildDependency Project="GraphicsFXCore.vcxproj"/>
+		<BuildDependency Project="PlaneSweepPatchCostShader.vcxproj"/>
 		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
 	</Project>
 	<Project Path="RUN_TESTS.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="c485166f-9bd2-3647-be34-96190dc64a7b">

@@ -43,16 +43,32 @@ namespace graphicsFX
         std::size_t compiledCount = 0;
         for (const std::filesystem::path &sourceFile : shaderFiles)
         {
-            const std::filesystem::path outputFile = outputFolder / (sourceFile.filename().string() + ".spv");
-            #if !defined(GRAPHICSAPP_ENABLE_PHASE_2PB_GPU_TRACE)
-            if (!ShouldCompileShader(sourceFile, outputFile, shaderSetup.m_compileOnlyIfChanged))
-            {
-                continue;
-            }
-            #endif
+            const std::filesystem::path outputFile =
+                outputFolder / (sourceFile.filename().string() + ".spv");
 
-            CompileShader(compilerPath, sourceFile, outputFile);
-            ++compiledCount;
+#if !defined(GRAPHICSAPP_ENABLE_PHASE_2PB_GPU_TRACE)
+            if (ShouldCompileShader(sourceFile, outputFile,
+                                    shaderSetup.m_compileOnlyIfChanged))
+#endif
+            {
+                CompileShader(compilerPath, sourceFile, outputFile);
+                ++compiledCount;
+            }
+
+            if (sourceFile.filename() == "planeSweepDepthMapSmokeTest.comp")
+            {
+                const std::filesystem::path fp64OutputFile =
+                    outputFolder / "planeSweepDepthMapFp64.comp.spv";
+
+#if !defined(GRAPHICSAPP_ENABLE_PHASE_2PB_GPU_TRACE)
+                if (ShouldCompileShader(sourceFile, fp64OutputFile,
+                                        shaderSetup.m_compileOnlyIfChanged))
+#endif
+                {
+                    CompileShader(compilerPath, sourceFile, fp64OutputFile, true);
+                    ++compiledCount;
+                }
+            }
         }
 
         UIUtility::Print("Startup shader compilation checked " + std::to_string(shaderFiles.size()) + " shader files and compiled " + std::to_string(compiledCount) + ".\n");
@@ -271,10 +287,12 @@ namespace graphicsFX
     }
 
     //Compiles one GLSL shader file.
-    void ShaderUtility::CompileShader(const std::filesystem::path &compilerPath, const std::filesystem::path &sourceFile, const std::filesystem::path &outputFile)
+    void ShaderUtility::CompileShader(const std::filesystem::path &compilerPath, const std::filesystem::path &sourceFile, const std::filesystem::path &outputFile, bool useFloat64)
     {
         std::string compilerOutput;
-        const int result = RunProcess(ShaderCommandLine(compilerPath, sourceFile, outputFile), compilerOutput);
+        const int result = RunProcess(
+            ShaderCommandLine(compilerPath, sourceFile, outputFile, useFloat64),
+            compilerOutput);
 
         if (!compilerOutput.empty())
         {
@@ -347,12 +365,16 @@ namespace graphicsFX
     }
 
     //Returns a quoted process command line.
-    std::wstring ShaderUtility::ShaderCommandLine(const std::filesystem::path &compilerPath, const std::filesystem::path &sourceFile, const std::filesystem::path &outputFile)
+    std::wstring ShaderUtility::ShaderCommandLine(const std::filesystem::path &compilerPath, const std::filesystem::path &sourceFile, const std::filesystem::path &outputFile, bool useFloat64)
     {
         std::wstring commandLine = L"\"" + compilerPath.wstring() + L"\" \"" + sourceFile.wstring() + L"\" -o \"" + outputFile.wstring() + L"\"";
 #if defined(GRAPHICSAPP_ENABLE_PHASE_2PB_GPU_TRACE)
         commandLine += L" -DGRAPHICSAPP_ENABLE_PHASE_2PB_GPU_TRACE=1";
 #endif
+        if (useFloat64)
+        {
+            commandLine += L" -DGRAPHICSAPP_PLANE_SWEEP_FP64=1";
+        }
         return commandLine;
     }
 

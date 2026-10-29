@@ -5,6 +5,7 @@ C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patc
 C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests/CMakeFiles/Continuous.dir
 C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests/CMakeFiles/NightlyMemoryCheck.dir
 C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests/CMakeFiles/PlaneSweepPatchCostTests.dir
+C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests/CMakeFiles/PlaneSweepPatchCostShader.dir
 C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests/CMakeFiles/RUN_TESTS.dir
 C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests/CMakeFiles/ALL_BUILD.dir
 C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests/CMakeFiles/ZERO_CHECK.dir

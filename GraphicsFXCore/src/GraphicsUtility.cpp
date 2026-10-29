@@ -505,10 +505,12 @@ namespace graphicsFX
         deviceFeatures.samplerAnisotropy = supportedFeatures.samplerAnisotropy;
         deviceFeatures.fillModeNonSolid = supportedFeatures.fillModeNonSolid;
         deviceFeatures.largePoints = supportedFeatures.largePoints;
+        deviceFeatures.shaderFloat64 = supportedFeatures.shaderFloat64;
         m_wideLinesEnabled = supportedFeatures.wideLines == VK_TRUE;
         m_anisotropyEnabled = supportedFeatures.samplerAnisotropy == VK_TRUE;
         m_wireframeEnabled = supportedFeatures.fillModeNonSolid == VK_TRUE;
         m_largePointsEnabled = supportedFeatures.largePoints == VK_TRUE;
+        m_shaderFloat64Enabled = supportedFeatures.shaderFloat64 == VK_TRUE;
 
         if (m_wideLinesEnabled)
         {

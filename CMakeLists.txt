@@ -115,4 +115,29 @@ if(BUILD_TESTING)
         COMMAND PlaneSweepPatchCostTests
             "${CMAKE_CURRENT_BINARY_DIR}/Testing/PatchCosts"
     )
+
+    if(Vulkan_GLSLC_EXECUTABLE)
+        add_custom_target(PlaneSweepPatchCostShader
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:PlaneSweepPatchCostTests>/shaders"
+            COMMAND "${Vulkan_GLSLC_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/planeSweepDepthMapSmokeTest.comp"
+                -o "$<TARGET_FILE_DIR:PlaneSweepPatchCostTests>/shaders/planeSweepDepthMapSmokeTest.comp.spv"
+            COMMAND "${Vulkan_GLSLC_EXECUTABLE}"
+                -DGRAPHICSAPP_PLANE_SWEEP_FP64=1
+                "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/planeSweepDepthMapSmokeTest.comp"
+                -o "$<TARGET_FILE_DIR:PlaneSweepPatchCostTests>/shaders/planeSweepDepthMapFp64.comp.spv"
+            DEPENDS
+                "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/planeSweepDepthMapSmokeTest.comp"
+            COMMENT "Compiling plane sweep shader for GPU regression tests"
+            VERBATIM
+        )
+        add_dependencies(PlaneSweepPatchCostTests PlaneSweepPatchCostShader)
+
+        add_test(
+            NAME PlaneSweepGpuPatchCosts
+            COMMAND PlaneSweepPatchCostTests
+                "${CMAKE_CURRENT_BINARY_DIR}/Testing/GpuPatchCosts" --gpu
+        )
+    endif()
 endif()

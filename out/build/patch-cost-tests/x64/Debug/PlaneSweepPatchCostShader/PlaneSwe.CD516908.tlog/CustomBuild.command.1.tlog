@@ -1,0 +1,22 @@
+^C:\USERS\PDESHPA1\DOCUMENTS\GRAPHICSAPP-MASTER\GRAPHICSAPP-MASTER\OUT\BUILD\PATCH-COST-TESTS\CMAKEFILES\65081C180CB92D2C59B2DCC46ADB6DEF\PLANESWEEPPATCHCOSTSHADER.RULE
+setlocal
+"C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -E make_directory C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests/Debug/shaders
+if %errorlevel% neq 0 goto :cmEnd
+C:\VulkanSDK\1.4.357.0\Bin\glslc.exe C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/Shaders/planeSweepDepthMapSmokeTest.comp -o C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests/Debug/shaders/planeSweepDepthMapSmokeTest.comp.spv
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^C:\USERS\PDESHPA1\DOCUMENTS\GRAPHICSAPP-MASTER\GRAPHICSAPP-MASTER\CMAKELISTS.TXT
+setlocal
+"C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -SC:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master -BC:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests --check-stamp-file C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

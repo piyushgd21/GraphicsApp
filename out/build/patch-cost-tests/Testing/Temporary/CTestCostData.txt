@@ -1,2 +1,3 @@
-PlaneSweepPatchCosts 1 1.23435
+PlaneSweepPatchCosts 2 0.678096
+PlaneSweepGpuPatchCosts 1 1.4303
 ---

@@ -1,0 +1,17 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="18.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\out\build\patch-cost-tests-msbuild-clean\CMakeFiles\7e665d2262e6cb545e65c554a317183f\Experimental.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="C:\Users\pdeshpa1\Documents\GraphicsApp-master\GraphicsApp-master\out\build\patch-cost-tests-msbuild-clean\CMakeFiles\Experimental" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{BE81FCD5-3F7B-3F13-867E-A9D8FDFB5DCC}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

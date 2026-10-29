@@ -41,6 +41,7 @@ namespace graphicsFX
         bool m_anisotropyEnabled{ false }; //Stores whether sampler anisotropy is available.
         bool m_wireframeEnabled{ false }; //Stores whether wireframe polygon mode is available.
         bool m_largePointsEnabled{ false }; //Stores whether large point sprites are available.
+        bool m_shaderFloat64Enabled{ false }; //Stores whether double-precision shader arithmetic is enabled.
         float m_minimumLineWidth{ 1.0f }; //Stores the minimum supported line width.
         float m_maximumLineWidth{ 1.0f }; //Stores the maximum supported line width.
         float m_minimumPointSize{ 1.0f }; //Stores the minimum supported point size.

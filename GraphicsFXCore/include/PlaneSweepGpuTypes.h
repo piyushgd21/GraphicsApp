@@ -21,6 +21,14 @@
 
 namespace graphicsFX
 {
+	//Keeps C++ method values synchronized with the shader constants.
+	static_assert(static_cast<uint32_t>(PatchCostMethod::PatchCostMethodMeanAbsoluteDifference) == 0U);
+	static_assert(static_cast<uint32_t>(PatchCostMethod::PatchCostMethodNormalizedCrossCorrelation) == 1U);
+	static_assert(static_cast<uint32_t>(PatchCostMethod::PatchCostMethodZeroMeanNormalizedCrossCorrelation) == 2U);
+	static_assert(static_cast<uint32_t>(PatchCostMethod::PatchCostMethodRankTransform) == 3U);
+	static_assert(static_cast<uint32_t>(PatchCostMethod::PatchCostMethodCensusTransform) == 4U);
+	static_assert(static_cast<uint32_t>(PatchCostMethod::PatchCostMethodADCensus) == 5U);
+
 	// Status codes for per-pixel final result (production). Backed by uint32_t
 	// and intentionally does NOT expose intermediate per-plane reasons such as
 	// "InsufficientSourceViews" which are plane-level diagnostics handled
@@ -84,7 +92,9 @@ namespace graphicsFX
 		uint32_t m_pointStep;                 // 52
 		uint32_t m_scaledWidth;               // 56
 		uint32_t m_scaledHeight;              // 60
-		// sizeof == 64
+		uint32_t m_patchCostMethod{ 0U };      // 64; matches PatchCostMethod values
+		float m_adCensusWeight{ 0.5f };        // 68
+		// sizeof == 72
 	};
 
 	// Maximum number of source images supported by the GPU path. Source counts
@@ -177,7 +187,7 @@ namespace graphicsFX
 
 	static_assert(std::is_standard_layout_v<PlaneSweepGpuParams>, "PlaneSweepGpuParams must be standard-layout");
 	static_assert(std::is_trivially_copyable_v<PlaneSweepGpuParams>, "PlaneSweepGpuParams must be trivially copyable");
-	static_assert(sizeof(PlaneSweepGpuParams) == 64, "PlaneSweepGpuParams size must be 64 bytes");
+	static_assert(sizeof(PlaneSweepGpuParams) == 72, "PlaneSweepGpuParams size must be 72 bytes");
 	static_assert(offsetof(PlaneSweepGpuParams, m_inverseNear) == 0, "m_inverseNear offset");
 	static_assert(offsetof(PlaneSweepGpuParams, m_planeCount) == 8, "m_planeCount offset");
 	static_assert(offsetof(PlaneSweepGpuParams, m_alphaThreshold) == 20, "m_alphaThreshold offset");
@@ -185,6 +195,8 @@ namespace graphicsFX
 	static_assert(offsetof(PlaneSweepGpuParams, m_pointStep) == 52, "m_pointStep offset");
 	static_assert(offsetof(PlaneSweepGpuParams, m_scaledWidth) == 56, "m_scaledWidth offset");
 	static_assert(offsetof(PlaneSweepGpuParams, m_scaledHeight) == 60, "m_scaledHeight offset");
+	static_assert(offsetof(PlaneSweepGpuParams, m_patchCostMethod) == 64, "m_patchCostMethod offset");
+	static_assert(offsetof(PlaneSweepGpuParams, m_adCensusWeight) == 68, "m_adCensusWeight offset");
 
 	static_assert(std::is_standard_layout_v<PlaneSweepGpuDebugRecord>, "PlaneSweepGpuDebugRecord must be standard-layout");
 	static_assert(std::is_trivially_copyable_v<PlaneSweepGpuDebugRecord>, "PlaneSweepGpuDebugRecord must be trivially copyable");

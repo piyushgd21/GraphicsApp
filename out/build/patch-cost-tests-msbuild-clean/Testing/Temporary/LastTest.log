@@ -1,0 +1,50 @@
+Start testing: Oct 26 17:00 Eastern Daylight Time
+----------------------------------------------------------
+1/2 Testing: PlaneSweepPatchCosts
+1/2 Test: PlaneSweepPatchCosts
+Command: "C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean/Debug/PlaneSweepPatchCostTests.exe" "C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean/Testing/PatchCosts"
+Directory: C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean
+"PlaneSweepPatchCosts" start time: Oct 26 17:00 Eastern Daylight Time
+Output:
+----------------------------------------------------------
+Passed MeanAbsoluteDifference
+Passed NormalizedCrossCorrelation
+Passed ZeroMeanNormalizedCrossCorrelation
+Passed RankTransform
+Passed CensusTransform
+Passed ADCensus
+All plane sweep patch cost tests passed.
+<end of output>
+Test time =   1.20 sec
+----------------------------------------------------------
+Test Passed.
+"PlaneSweepPatchCosts" end time: Oct 26 17:00 Eastern Daylight Time
+"PlaneSweepPatchCosts" time elapsed: 00:00:01
+----------------------------------------------------------
+
+2/2 Testing: PlaneSweepGpuPatchCosts
+2/2 Test: PlaneSweepGpuPatchCosts
+Command: "C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean/Debug/PlaneSweepPatchCostTests.exe" "C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean/Testing/GpuPatchCosts" "--gpu"
+Directory: C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean
+"PlaneSweepGpuPatchCosts" start time: Oct 26 17:00 Eastern Daylight Time
+Output:
+----------------------------------------------------------
+GPU comparisons using: NVIDIA GeForce RTX 4090
+GPU shaderFloat64 enabled: yes
+Passed MeanAbsoluteDifference
+Passed NormalizedCrossCorrelation
+Passed ZeroMeanNormalizedCrossCorrelation
+Passed RankTransform
+Passed CensusTransform
+Passed ADCensus
+GPU comparisons passed for all six patch cost methods.
+All plane sweep patch cost tests passed.
+<end of output>
+Test time =   0.91 sec
+----------------------------------------------------------
+Test Passed.
+"PlaneSweepGpuPatchCosts" end time: Oct 26 17:00 Eastern Daylight Time
+"PlaneSweepGpuPatchCosts" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Oct 26 17:00 Eastern Daylight Time

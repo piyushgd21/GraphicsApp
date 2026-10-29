@@ -64,13 +64,13 @@ namespace graphicsFX
             static bool ShouldCompileShader(const std::filesystem::path &sourceFile, const std::filesystem::path &outputFile, bool compileOnlyIfChanged);
 
             //Compiles one GLSL shader file.
-            static void CompileShader(const std::filesystem::path &compilerPath, const std::filesystem::path &sourceFile, const std::filesystem::path &outputFile);
+            static void CompileShader(const std::filesystem::path &compilerPath, const std::filesystem::path &sourceFile, const std::filesystem::path &outputFile, bool useFloat64 = false);
 
             //Runs one process and captures its output.
             static int RunProcess(const std::wstring &commandLine, std::string &output);
 
             //Returns a quoted process command line.
-            static std::wstring ShaderCommandLine(const std::filesystem::path &compilerPath, const std::filesystem::path &sourceFile, const std::filesystem::path &outputFile);
+            static std::wstring ShaderCommandLine(const std::filesystem::path &compilerPath, const std::filesystem::path &sourceFile, const std::filesystem::path &outputFile, bool useFloat64 = false);
 
     };
 }

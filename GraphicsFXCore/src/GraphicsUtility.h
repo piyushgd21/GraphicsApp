@@ -125,6 +125,9 @@ namespace graphicsFX
             //Returns whether large point sprites are enabled.
             bool LargePointsEnabled(void) const { return m_largePointsEnabled; }
 
+            //Returns whether double-precision shader arithmetic is enabled.
+            bool ShaderFloat64Enabled(void) const { return m_shaderFloat64Enabled; }
+
             //Returns the maximum supported texture anisotropy.
             float MaximumAnisotropy(void) const { return m_maximumAnisotropy; }
 
@@ -265,6 +268,7 @@ namespace graphicsFX
             bool m_anisotropyEnabled{ false }; //Stores whether sampler anisotropy is enabled.
             bool m_wireframeEnabled{ false }; //Stores whether wireframe polygon mode is enabled.
             bool m_largePointsEnabled{ false }; //Stores whether large point sprites are enabled.
+            bool m_shaderFloat64Enabled{ false }; //Stores whether shader float64 is enabled.
             float m_minimumLineWidth{ 1.0f }; //Stores the minimum supported line width.
             float m_maximumLineWidth{ 1.0f }; //Stores the maximum supported line width.
             float m_minimumPointSize{ 1.0f }; //Stores the minimum supported point size.

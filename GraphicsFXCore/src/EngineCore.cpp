@@ -2304,6 +2304,7 @@ namespace graphicsFX
         context.m_anisotropyEnabled = m_graphicsUtility.AnisotropyEnabled();
         context.m_wireframeEnabled = m_graphicsUtility.WireframeEnabled();
         context.m_largePointsEnabled = m_graphicsUtility.LargePointsEnabled();
+        context.m_shaderFloat64Enabled = m_graphicsUtility.ShaderFloat64Enabled();
         context.m_minimumLineWidth = m_graphicsUtility.MinimumLineWidth();
         context.m_maximumLineWidth = m_graphicsUtility.MaximumLineWidth();
         context.m_minimumPointSize = m_graphicsUtility.MinimumPointSize();

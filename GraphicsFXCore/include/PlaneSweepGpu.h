@@ -71,7 +71,8 @@ namespace graphicsFX
 		PlaneSweepGpu(void);
 		~PlaneSweepGpu(void);
 
-		void Initialize(VkDevice device, VkPhysicalDevice physicalDevice, VkQueue queue, VkCommandPool commandPool);
+		void Initialize(VkDevice device, VkPhysicalDevice physicalDevice, VkQueue queue,
+			VkCommandPool commandPool, bool shaderFloat64Enabled = false);
 		void RunComputeSmokeTest(void);
 		bool RunStorageBufferSmokeTest(void);
 		bool RunCameraLayoutSmokeTest(void);
@@ -198,6 +199,7 @@ namespace graphicsFX
 		);
 		void Clean(void);
 		bool ShaderSampledImageArrayDynamicIndexingEnabled(void) const;
+		bool ShaderFloat64Enabled(void) const { return m_shaderFloat64Enabled; }
 
 	private:
 		// helpers
@@ -209,6 +211,7 @@ namespace graphicsFX
 		VkQueue m_queue{ VK_NULL_HANDLE };
 		VkCommandPool m_commandPool{ VK_NULL_HANDLE };
 		bool m_shaderSampledImageArrayDynamicIndexingEnabled{ false };
+		bool m_shaderFloat64Enabled{ false };
 
 		VkShaderModule m_shaderModule{ VK_NULL_HANDLE };
 		VkPipelineLayout m_pipelineLayout{ VK_NULL_HANDLE };

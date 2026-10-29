@@ -440,7 +440,8 @@ PlaneSweepGpu::~PlaneSweepGpu(void)
 	Clean();
 }
 
-void PlaneSweepGpu::Initialize(VkDevice device, VkPhysicalDevice physicalDevice, VkQueue queue, VkCommandPool commandPool)
+void PlaneSweepGpu::Initialize(VkDevice device, VkPhysicalDevice physicalDevice,
+    VkQueue queue, VkCommandPool commandPool, bool shaderFloat64Enabled)
 {
 	if (m_initialized)
 	{
@@ -452,6 +453,7 @@ void PlaneSweepGpu::Initialize(VkDevice device, VkPhysicalDevice physicalDevice,
 	m_queue = queue;
 	m_commandPool = commandPool;
 	m_shaderSampledImageArrayDynamicIndexingEnabled = false;
+	m_shaderFloat64Enabled = shaderFloat64Enabled;
 
 	m_initialized = true;
 }
@@ -1928,6 +1930,22 @@ bool PlaneSweepGpu::RunProductionDepthMap(
 {
 	if (!m_initialized) throw std::runtime_error("PlaneSweepGpu not initialized.");
 	if (stats) *stats = {};
+	const bool usesCorrelation =
+		params.m_patchCostMethod == static_cast<uint32_t>(
+			PatchCostMethod::PatchCostMethodNormalizedCrossCorrelation) ||
+		params.m_patchCostMethod == static_cast<uint32_t>(
+			PatchCostMethod::PatchCostMethodZeroMeanNormalizedCrossCorrelation);
+
+	if (usesCorrelation && !m_shaderFloat64Enabled)
+	{
+		throw std::runtime_error(
+			"NCC/ZNCC GPU execution requires enabled shaderFloat64 support.");
+	}
+
+	const std::string shaderRelativePath = usesCorrelation
+		? "shaders/planeSweepDepthMapFp64.comp.spv"
+		: "shaders/planeSweepDepthMapSmokeTest.comp.spv";
+
 	if (sourceImages.empty() || sourceImages.size() > MAX_PLANE_SWEEP_SOURCE_IMAGES || params.m_sourceCount != sourceImages.size()) throw std::invalid_argument("Real depth-map comparison requires 1..8 sources in exact CPU order.");
 	const uint32_t scaledWidth = params.m_scaledWidth, scaledHeight = params.m_scaledHeight;
 	const uint32_t pointStep = std::max(1u, params.m_pointStep);
@@ -2062,7 +2080,7 @@ bool PlaneSweepGpu::RunProductionDepthMap(
 		std::array<VkDescriptorPoolSize, 2> poolSizes{{{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 18}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 11}}}; VkDescriptorPoolCreateInfo pci{}; pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO; pci.maxSets = 1; pci.poolSizeCount = 2; pci.pPoolSizes = poolSizes.data(); if (vkCreateDescriptorPool(m_device, &pci, nullptr, &pool) != VK_SUCCESS) throw std::runtime_error("Failed to create Phase 2P descriptor pool."); VkDescriptorSetAllocateInfo sai{}; sai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO; sai.descriptorPool = pool; sai.descriptorSetCount = 1; sai.pSetLayouts = &setLayout; if (vkAllocateDescriptorSets(m_device, &sai, &descriptorSet) != VK_SUCCESS) throw std::runtime_error("Failed to allocate Phase 2P descriptor set.");
 		std::array<VkDescriptorImageInfo, 1> referenceInfo{{{sampler, imageViews[0], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}}}, referenceMaskInfo{{{sampler, imageViews[1], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}}}; std::array<VkDescriptorImageInfo, 8> sourceInfo{}, maskInfo{}; for (uint32_t i = 0; i < 8; ++i) { sourceInfo[i] = {sampler, imageViews[2 + i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}; maskInfo[i] = {sampler, imageViews[10 + i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}; }
 		std::array<VkDescriptorBufferInfo, 11> bufferInfo{}; for (uint32_t i = 0; i < 4; ++i) bufferInfo[i] = {inputBuffers[i], 0, inputSizes[i]}; for (uint32_t i = 0; i < 7; ++i) bufferInfo[4 + i] = {outputBuffers[i], 0, outputSizes[i]}; std::array<VkWriteDescriptorSet, 15> writes{}; for (uint32_t i = 0; i < 15; ++i) { writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; writes[i].dstSet = descriptorSet; writes[i].dstBinding = i; writes[i].descriptorType = i < 4 ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; } writes[0].descriptorCount = writes[1].descriptorCount = 1; writes[0].pImageInfo = referenceInfo.data(); writes[1].pImageInfo = referenceMaskInfo.data(); writes[2].descriptorCount = writes[3].descriptorCount = 8; writes[2].pImageInfo = sourceInfo.data(); writes[3].pImageInfo = maskInfo.data(); for (uint32_t i = 0; i < 11; ++i) { writes[4 + i].descriptorCount = 1; writes[4 + i].pBufferInfo = &bufferInfo[i]; } vkUpdateDescriptorSets(m_device, 15, writes.data(), 0, nullptr);
-		const std::vector<char> code = ReadShaderFile("shaders/planeSweepDepthMapSmokeTest.comp.spv"); if (code.empty()) throw std::runtime_error("Phase 2P depth-map SPIR-V is missing."); VkShaderModuleCreateInfo sci{}; sci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO; sci.codeSize = code.size(); sci.pCode = reinterpret_cast<const uint32_t *>(code.data()); if (vkCreateShaderModule(m_device, &sci, nullptr, &shader) != VK_SUCCESS) throw std::runtime_error("Failed to create Phase 2P shader."); VkPipelineLayoutCreateInfo pli{}; pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO; pli.setLayoutCount = 1; pli.pSetLayouts = &setLayout; if (vkCreatePipelineLayout(m_device, &pli, nullptr, &pipelineLayout) != VK_SUCCESS) throw std::runtime_error("Failed to create Phase 2P pipeline layout."); VkPipelineShaderStageCreateInfo stage{}; stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO; stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; stage.module = shader; stage.pName = "main"; VkComputePipelineCreateInfo cpci{}; cpci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO; cpci.stage = stage; cpci.layout = pipelineLayout; if (vkCreateComputePipelines(m_device, VK_NULL_HANDLE, 1, &cpci, nullptr, &pipeline) != VK_SUCCESS) throw std::runtime_error("Failed to create Phase 2P compute pipeline.");
+		const std::vector<char> code = ReadShaderFile(shaderRelativePath); if (code.empty()) throw std::runtime_error("PlaneSweep shader SPIR-V is missing: " + shaderRelativePath); VkShaderModuleCreateInfo sci{}; sci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO; sci.codeSize = code.size(); sci.pCode = reinterpret_cast<const uint32_t *>(code.data()); if (vkCreateShaderModule(m_device, &sci, nullptr, &shader) != VK_SUCCESS) throw std::runtime_error("Failed to create Phase 2P shader."); VkPipelineLayoutCreateInfo pli{}; pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO; pli.setLayoutCount = 1; pli.pSetLayouts = &setLayout; if (vkCreatePipelineLayout(m_device, &pli, nullptr, &pipelineLayout) != VK_SUCCESS) throw std::runtime_error("Failed to create Phase 2P pipeline layout."); VkPipelineShaderStageCreateInfo stage{}; stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO; stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; stage.module = shader; stage.pName = "main"; VkComputePipelineCreateInfo cpci{}; cpci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO; cpci.stage = stage; cpci.layout = pipelineLayout; if (vkCreateComputePipelines(m_device, VK_NULL_HANDLE, 1, &cpci, nullptr, &pipeline) != VK_SUCCESS) throw std::runtime_error("Failed to create Phase 2P compute pipeline.");
 		VkCommandBufferAllocateInfo cai{}; cai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO; cai.commandPool = m_commandPool; cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; cai.commandBufferCount = 1; if (vkAllocateCommandBuffers(m_device, &cai, &commandBuffer) != VK_SUCCESS) throw std::runtime_error("Failed to allocate Phase 2P command buffer."); VkCommandBufferBeginInfo cbi{}; cbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO; cbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT; if (vkBeginCommandBuffer(commandBuffer, &cbi) != VK_SUCCESS) throw std::runtime_error("Failed to begin Phase 2P command buffer.");
 		std::array<VkImageMemoryBarrier, kImageCount> imageToTransfer{}; for (uint32_t i = 0; i < kImageCount; ++i) { auto &b = imageToTransfer[i]; b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER; b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; b.image = images[i]; b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}; } vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, kImageCount, imageToTransfer.data());
 		for (uint32_t i = 0; i < kImageCount; ++i) { VkBufferImageCopy copy{}; copy.bufferOffset = offsets[i]; copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; copy.imageExtent = {upload[i].width, upload[i].height, 1}; vkCmdCopyBufferToImage(commandBuffer, imageStaging, images[i], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy); }
@@ -2158,6 +2176,7 @@ void PlaneSweepGpu::Clean(void)
 	}
 
 	m_initialized = false;
+	m_shaderFloat64Enabled = false;
 }
 
 // Runs a trivial compute smoke test: create shader module, pipeline, record a one-time command buffer, dispatch, submit, and wait for completion.

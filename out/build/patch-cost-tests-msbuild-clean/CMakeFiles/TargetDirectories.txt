@@ -1,0 +1,11 @@
+C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean/CMakeFiles/GraphicsFXCore.dir
+C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean/CMakeFiles/GraphicsApp00.dir
+C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean/CMakeFiles/Experimental.dir
+C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean/CMakeFiles/Nightly.dir
+C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean/CMakeFiles/Continuous.dir
+C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean/CMakeFiles/NightlyMemoryCheck.dir
+C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean/CMakeFiles/PlaneSweepPatchCostTests.dir
+C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean/CMakeFiles/PlaneSweepPatchCostShader.dir
+C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean/CMakeFiles/RUN_TESTS.dir
+C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean/CMakeFiles/ALL_BUILD.dir
+C:/Users/pdeshpa1/Documents/GraphicsApp-master/GraphicsApp-master/out/build/patch-cost-tests-msbuild-clean/CMakeFiles/ZERO_CHECK.dir
