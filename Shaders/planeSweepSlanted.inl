@@ -113,6 +113,10 @@ vec4 psConsider(int x, int y, vec4 best, vec3 k)
 vec4 psInitialize(int x, int y)
 {
     vec4 best = psInvalid();
+    // Camera pose is unchanged by resizing, so k needs no image-scale conversion.
+    // Re-score the inherited plane against the current level instead of inheriting its cost.
+    vec4 parent = psParentPlane(x, y);
+    if (parent.w < 3.402823466e+38f) best = psConsider(x, y, best, psVector(parent));
     float depth = psSeed(x, y);
     if (depth <= 0.0f) return best;
     vec3 k = psForward() * (1.0f / depth);
@@ -204,4 +208,12 @@ int psStatus(int x, int y, vec4 result)
     if (result.x > 0.0f) return 3;
     if (psReadPlane(x, y).w <= psCostThreshold() && psConfidenceEnabled()) return 2;
     return 1;
+}
+// Preserve provisional geometry between levels; final output still applies all rejection rules.
+vec4 psLevelState(int x, int y, vec4 result)
+{
+    vec4 best = psReadPlane(x, y);
+    if (!psFinalLevel() && best.w < 3.402823466e+38f)
+        result.x = 1.0f / dot(psVector(best), psRay(x, y));
+    return result;
 }

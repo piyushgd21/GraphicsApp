@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 
 using namespace graphicsFX;
@@ -62,6 +63,43 @@ static float Error(const SweepUtility::PlaneSweepDepthMap &map, const SweepUtili
     return errors[errors.size() / 2];
 }
 
+// Inherited tilted planes must initialize fine pixels even without sweep seeds.
+static void CheckPlaneInheritance()
+{
+    const auto reference = Render(0);
+    PlaneSweepPyramidLevel level{ reference, { Render(0.22f), Render(-0.22f) } };
+    ColmapSetup setup;
+    setup.m_planeSweepMatchingMode = PlaneSweepMatchingMode::PatchMatchSlanted;
+    setup.m_planeSweepPlaneCount = 24; setup.m_planeSweepPatchRadius = 3;
+    setup.m_planeSweepMinValidSourceViews = 2; setup.m_planeSweepPatchMatchColorSigma = 0.45f;
+    setup.m_planeSweepConfidenceEnabled = setup.m_planeSweepTextureRejectionEnabled = false;
+    setup.m_planeSweepCostThreshold = 0.3f;
+    SweepUtility::PlaneSweepDepthRange range; range.m_nearDepth = 1.2f; range.m_farDepth = 4.5f;
+    const uint32_t width = reference.m_texture.m_width, height = reference.m_texture.m_height;
+    const float spacing = (1.0f / range.m_nearDepth - 1.0f / range.m_farDepth) / float(setup.m_planeSweepPlaneCount - 1);
+    const PlaneSweepPyramidState empty{ 0, std::numeric_limits<float>::max(), 0, spacing };
+    // Odd parent dimensions exercise pixel-center mapping. The stored cost is deliberately stale.
+    const uint32_t parentWidth = 13, parentHeight = 10;
+    const std::vector<Float4> parents(size_t(parentWidth) * parentHeight, { -0.9f / 2.4f, -0.2f / 2.4f, -1.0f / 2.4f, 0.9f });
+    std::vector<PlaneSweepPyramidState> state(size_t(width) * height, empty);
+    PlaneSweepPyramidStats statistics;
+    const auto planes = RefinePlaneSweepSlantedLevelCpu(level, setup, range, state, parents, parentWidth, parentHeight, true, statistics);
+    Require(planes.size() == state.size() && statistics.m_accepted > 450, "Parent planes did not initialize fine pixels without sweep seeds");
+    Require(Error(MakePlaneSweepPyramidDepthMap(reference, width, height, state), reference, false) < 0.07f,
+        "Inherited planes were scaled or transferred incorrectly");
+    setup.m_planeSweepConfidenceEnabled = true; setup.m_planeSweepConfidenceMinimumDifference = 10;
+    state.assign(state.size(), empty);
+    statistics = {};
+    RefinePlaneSweepSlantedLevelCpu(level, setup, range, state, parents, parentWidth, parentHeight, false, statistics);
+    const auto provisional = std::count_if(state.begin(), state.end(), [](const auto &pixel) { return pixel[0] > 0; });
+    Require(provisional > 450 && statistics.m_confidenceRejected > 0, "Intermediate rejection discarded provisional geometry");
+    state.assign(state.size(), empty);
+    statistics = {};
+    RefinePlaneSweepSlantedLevelCpu(level, setup, range, state, parents, parentWidth, parentHeight, true, statistics);
+    Require(std::count_if(state.begin(), state.end(), [](const auto &pixel) { return pixel[0] > 0; }) < provisional,
+        "Final level did not apply confidence rejection");
+}
+
 static void CheckConfig(bool gpu)
 {
     const std::string folder = gpu ? "Testing/SlantedGpu" : "Testing/SlantedCpu";
@@ -89,6 +127,7 @@ int main(int argc, char **argv)
     {
         const bool useGpu = argc > 1 && std::string(argv[1]) == "--gpu";
         CheckConfig(useGpu);
+        CheckPlaneInheritance();
         PlaneSweepGpuTestContext context;
         PlaneSweepGpu gpu;
         if (useGpu)
@@ -116,14 +155,20 @@ int main(int argc, char **argv)
             {
                 const auto reference = Render(0, edge, edge);
                 std::vector<SweepUtility::PlaneSweepImage> sources{ Render(0.22f, edge, edge, 0.04f), Render(-0.22f, edge, edge, -0.03f) };
-                const auto cpu = RunPlaneSweepPyramidCpu(reference, sources, setup, range);
+                uint64_t coarseSweepEvaluations = 0;
+                std::vector<PlaneSweepPyramidStats> cpuStatistics;
+                const auto cpu = RunPlaneSweepPyramidCpu(reference, sources, setup, range, &cpuStatistics);
                 const float error = Error(cpu, reference, edge);
                 std::cout << "Slanted method=" << method << " edge=" << edge << " median depth error=" << error << std::endl;
                 Require(error < 0.07f, "Slanted reconstruction failed known geometry");
                 if (!edge && method == 0)
                 {
                     auto legacy = setup; legacy.m_planeSweepMatchingMode = PlaneSweepMatchingMode::PlaneSweep;
-                    const auto baseline = RunPlaneSweepPyramidCpu(reference, sources, legacy, range);
+                    std::vector<PlaneSweepPyramidStats> baselineStatistics;
+                    const auto baseline = RunPlaneSweepPyramidCpu(reference, sources, legacy, range, &baselineStatistics);
+                    coarseSweepEvaluations = baselineStatistics.front().m_evaluations;
+                    Require(cpuStatistics.size() == 2 && cpuStatistics.front().m_evaluations > coarseSweepEvaluations,
+                        "Coarse pyramid level did not run slanted refinement");
                     const float baselineError = Error(baseline, reference, false);
                     std::cout << "Fronto-parallel median depth error=" << baselineError << std::endl;
                     Require(error < baselineError, "Tilted-plane refinement did not improve the sloping surface");
@@ -134,7 +179,11 @@ int main(int argc, char **argv)
                 {
                     SweepUtility::PlaneSweepDepthMap actual;
                     std::string failure;
-                    Require(gpu.RunCoarseToFineDepthMap(reference, sources, setup, range, actual, nullptr, &failure), failure.c_str());
+                    std::vector<PlaneSweepPyramidStats> gpuStatistics;
+                    Require(gpu.RunCoarseToFineDepthMap(reference, sources, setup, range, actual, &gpuStatistics, &failure), failure.c_str());
+                    Require(gpuStatistics.size() == cpuStatistics.size(), "CPU/GPU pyramid level counts differ");
+                    if (coarseSweepEvaluations)
+                        Require(gpuStatistics.front().m_evaluations > coarseSweepEvaluations, "GPU coarse pyramid level did not run slanted refinement");
                     const float gpuError = Error(actual, reference, edge);
                     Require(gpuError < 0.07f, "GPU slanted reconstruction failed known geometry");
                     size_t different = 0;

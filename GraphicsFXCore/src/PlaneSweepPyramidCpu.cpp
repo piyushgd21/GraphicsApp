@@ -12,20 +12,29 @@ namespace graphicsFX
         const std::vector<SweepUtility::PlaneSweepImage> &sources, const ColmapSetup &setup,
         const SweepUtility::PlaneSweepDepthRange &range, std::vector<PlaneSweepPyramidStats> *statistics)
     {
-        if (setup.m_planeSweepMatchingMode == PlaneSweepMatchingMode::PatchMatchSlanted)
-            return RunPlaneSweepSlantedCpu(reference, sources, setup, range, statistics);
+        const bool slanted = setup.m_planeSweepMatchingMode == PlaneSweepMatchingMode::PatchMatchSlanted;
+        if (slanted) ValidatePlaneSweepSlantedSetup(setup);
         if (!(range.m_nearDepth > 0 && range.m_farDepth > range.m_nearDepth) || setup.m_planeSweepPlaneCount < 2)
             throw std::invalid_argument("Invalid pyramid depth range or plane count.");
         const auto start = std::chrono::steady_clock::now();
         const auto pyramid = BuildPlaneSweepPyramid(reference, sources, setup);
+        // Keep sweep seeds provisional until weighted slanted matching evaluates this level.
+        ColmapSetup searchSetup = setup;
+        if (slanted)
+        {
+            searchSetup.m_planeSweepConfidenceEnabled = false;
+            searchSetup.m_planeSweepTextureRejectionEnabled = false;
+            searchSetup.m_planeSweepCostThreshold = 10.0f;
+        }
         const float nearInv = 1.0f / range.m_nearDepth, farInv = 1.0f / range.m_farDepth;
         const float baseSpacing = (nearInv - farInv) / float(setup.m_planeSweepPlaneCount - 1);
         const float maximum = std::numeric_limits<float>::max();
         const auto confidenceThreshold = [&](float spacing)
         // Local samples are closer together; scale the gap threshold by their
         // squared spacing ratio instead of applying the coarse uniqueness gap unchanged.
-        { float ratio = std::min(1.0f, spacing / baseSpacing); return setup.m_planeSweepConfidenceMinimumDifference * ratio * ratio; };
+        { float ratio = std::min(1.0f, spacing / baseSpacing); return searchSetup.m_planeSweepConfidenceMinimumDifference * ratio * ratio; };
         std::vector<PlaneSweepPyramidState> parents;
+        std::vector<Float4> parentPlanes;
         uint32_t parentWidth = 0, parentHeight = 0;
         std::vector<PlaneSweepPyramidStats> stats;
         for (size_t l = 0; l < pyramid.size(); ++l)
@@ -41,7 +50,7 @@ namespace graphicsFX
                     Float4 color;
                     if (!SweepUtility::SamplePlaneSweepPixel(level.m_reference, float(x), float(y), color) || color.w <= setup.m_planeSweepAlphaThreshold) continue;
                     float deviation;
-                    if (setup.m_planeSweepTextureRejectionEnabled &&
+                    if (searchSetup.m_planeSweepTextureRejectionEnabled &&
                         (!SweepUtility::ComputeTextureStandardDeviation(level.m_reference, float(x), float(y), setup.m_planeSweepPatchRadius,
                             setup.m_planeSweepAlphaThreshold, deviation) || deviation < setup.m_planeSweepTextureMinimumStdDev))
                     { ++counters.m_textureRejected; continue; }
@@ -89,8 +98,8 @@ namespace graphicsFX
                         const uint32_t px = std::min(uint32_t((float(x) + 0.5f) * float(parentWidth) / float(width)), parentWidth - 1);
                         const uint32_t py = std::min(uint32_t((float(y) + 0.5f) * float(parentHeight) / float(height)), parentHeight - 1);
                         parent = parents[size_t(py) * parentWidth + px];
-                        global = parent[0] <= 0 || parent[1] > setup.m_planeSweepCostThreshold ||
-                            (setup.m_planeSweepConfidenceEnabled && parent[2] < confidenceThreshold(parent[3]));
+                        global = parent[0] <= 0 || parent[1] > searchSetup.m_planeSweepCostThreshold ||
+                            (searchSetup.m_planeSweepConfidenceEnabled && parent[2] < confidenceThreshold(parent[3]));
                         for (int dy = -1; dy <= 1; ++dy)
                             for (int dx = -1; dx <= 1; ++dx)
                             {
@@ -102,8 +111,8 @@ namespace graphicsFX
                             }
                     }
                     const auto unreliable = [&](bool boundary)
-                    { return best[0] <= 0 || best[1] > setup.m_planeSweepCostThreshold || boundary ||
-                        (setup.m_planeSweepConfidenceEnabled && best[2] - best[1] < confidenceThreshold(best[3])); };
+                    { return best[0] <= 0 || best[1] > searchSetup.m_planeSweepCostThreshold || boundary ||
+                        (searchSetup.m_planeSweepConfidenceEnabled && best[2] - best[1] < confidenceThreshold(best[3])); };
                     if (global)
                     {
                         fallback = !parents.empty(); search(0, 0, true);
@@ -126,16 +135,18 @@ namespace graphicsFX
                     {
                         auto &pixel = output[size_t(y) * width + x];
                         pixel = { 1 / best[0], best[1], best[2] < maximum ? best[2] - best[1] : 0, best[3] };
-                        const bool accepted = best[1] <= setup.m_planeSweepCostThreshold &&
-                            (!setup.m_planeSweepConfidenceEnabled || pixel[2] >= confidenceThreshold(pixel[3]));
+                        const bool accepted = best[1] <= searchSetup.m_planeSweepCostThreshold &&
+                            (!searchSetup.m_planeSweepConfidenceEnabled || pixel[2] >= confidenceThreshold(pixel[3]));
                         if (accepted) ++counters.m_accepted;
                         else
                         {
-                            if (best[1] <= setup.m_planeSweepCostThreshold) ++counters.m_confidenceRejected;
+                            if (best[1] <= searchSetup.m_planeSweepCostThreshold) ++counters.m_confidenceRejected;
                             if (finalLevel) pixel[0] = 0;
                         }
                     }
                 }
+            if (slanted)
+                parentPlanes = RefinePlaneSweepSlantedLevelCpu(level, setup, range, output, parentPlanes, parentWidth, parentHeight, finalLevel, counters);
             if (setup.m_planeSweepSavePyramidDepth)
             {
                 ColmapSetup saved = setup; saved.m_planeSweepSaveDepth = true;

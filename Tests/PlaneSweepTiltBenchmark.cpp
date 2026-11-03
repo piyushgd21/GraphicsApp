@@ -1,4 +1,4 @@
-// Controlled real-data GPU experiment: identical weighted matcher, varying only tilt permission.
+// Controlled real-data GPU experiments: tilt-only ablation or three matching modes on identical inputs.
 #include "PlaneSweepGpu.h"
 #include "PlaneSweepGpuTestContext.h"
 
@@ -39,11 +39,19 @@ int main(int argc, char **argv)
 {
     try
     {
-        if (argc < 3) throw std::runtime_error("Usage: PlaneSweepTiltBenchmark setup.ini output_folder [maximum_reference_views]");
+        if (argc < 3) throw std::runtime_error("Usage: PlaneSweepTiltBenchmark setup.ini output_folder [maximum_reference_views] [modes]");
+        const bool compareModes = argc > 4 && std::string(argv[4]) == "modes";
+        if (argc > 4 && !compareModes) throw std::runtime_error("Unknown comparison: expected modes.");
+        struct Variant { const char *name; PlaneSweepMatchingMode mode; bool tilt; };
+        std::vector<Variant> variants;
+        if (compareModes)
+            variants = { { "planesweep", PlaneSweepMatchingMode::PlaneSweep, false },
+                { "slanted_front", PlaneSweepMatchingMode::PatchMatchSlanted, false }, { "slanted", PlaneSweepMatchingMode::PatchMatchSlanted, true } };
+        else
+            variants = { { "tilt_off", PlaneSweepMatchingMode::PatchMatchSlanted, false }, { "tilt_on", PlaneSweepMatchingMode::PatchMatchSlanted, true } };
         const std::filesystem::path output = std::filesystem::absolute(argv[2]);
         if (std::filesystem::exists(output / "views.jsonl")) throw std::runtime_error("Output already contains a benchmark. Choose a new folder.");
-        std::filesystem::create_directories(output / "tilt_off");
-        std::filesystem::create_directories(output / "tilt_on");
+        for (const auto &variant : variants) std::filesystem::create_directories(output / variant.name);
         std::filesystem::copy_file(argv[1], output / "source_setup.ini", std::filesystem::copy_options::overwrite_existing);
         auto setup = LoadProgramSetup(argv[1]).m_colmap;
         if (std::filesystem::path(setup.m_cameraIntrinsicFile).parent_path().filename() != "scan9")
@@ -76,7 +84,8 @@ int main(int argc, char **argv)
             << "\niterations=" << setup.m_planeSweepPatchMatchIterations << "\ncost_threshold=" << setup.m_planeSweepCostThreshold
             << "\nconfidence_enabled=" << setup.m_planeSweepConfidenceEnabled << "\nconfidence_gap=" << setup.m_planeSweepConfidenceMinimumDifference
             << "\ntexture_rejection_enabled=" << setup.m_planeSweepTextureRejectionEnabled << "\ntexture_stddev=" << setup.m_planeSweepTextureMinimumStdDev
-            << "\nraw_depths_before_crossview_filter=true\nonly_varied_parameter=PlaneSweepPatchMatchTiltEnabled\n";
+            << "\nraw_depths_before_crossview_filter=true\ncomparison=" << (compareModes ? "matching_modes" : "tilt_only")
+            << "\nonly_varied_parameter=" << (compareModes ? "PlaneSweepMatchingMode_and_PlaneSweepPatchMatchTiltEnabled" : "PlaneSweepPatchMatchTiltEnabled") << '\n';
         PlaneSweepGpuTestContext context; context.Initialize();
         PlaneSweepGpu gpu;
         gpu.Initialize(context.m_device, context.m_physicalDevice, context.m_queue, context.m_commandPool, context.m_shaderFloat64Enabled);
@@ -85,7 +94,7 @@ int main(int argc, char **argv)
         std::ofstream metadata(output / "views.jsonl"), sparseSamples(output / "sparse_samples.csv"), metrics(output / "gpu_metrics.csv");
         metadata << std::setprecision(12); sparseSamples << std::setprecision(12);
         sparseSamples << "image_id,point_index,x,y,depth\n";
-        metrics << "image_id,tilt,valid_pixels,pixels,wall_ms,evaluations,median_tilt_degrees,p90_tilt_degrees,max_control_sine\n";
+        metrics << "image_id,tilt,valid_pixels,pixels,wall_ms,evaluations,median_tilt_degrees,p90_tilt_degrees,max_control_sine,variant\n";
         metrics << std::setprecision(12);
         const size_t requested = argc > 3 ? size_t(std::stoul(argv[3])) : cameras.m_cameras.size();
         const size_t count = std::min(requested, cameras.m_cameras.size());
@@ -128,8 +137,12 @@ int main(int argc, char **argv)
                 }
             }
             sparseSamples.flush();
-            for (bool tilt : { false, true })
+            for (size_t arm = 0; arm < variants.size(); ++arm)
             {
+                // Rotate the order in mode comparisons to distribute pipeline warmup and timing bias.
+                const auto &variant = variants[(arm + (compareModes ? view : 0)) % variants.size()];
+                const bool tilt = variant.tilt;
+                setup.m_planeSweepMatchingMode = variant.mode;
                 setup.m_planeSweepPatchMatchTiltEnabled = tilt;
                 SweepUtility::PlaneSweepDepthMap map;
                 PlaneSweepSlantedDiagnostics diagnostics;
@@ -140,17 +153,19 @@ int main(int argc, char **argv)
                 if (!gpu.RunCoarseToFineDepthMap(reference, sources, setup, range, map, &stats, &failure, &diagnostics))
                     throw std::runtime_error("GPU benchmark failed: " + failure);
                 const double elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
-                const auto folder = output / (tilt ? "tilt_on" : "tilt_off");
+                const auto folder = output / variant.name;
                 const std::string stem = std::to_string(camera.m_imageId);
                 SaveArray(folder / (stem + ".depth.bin"), map.m_width, map.m_height, map.m_depthValues);
                 SaveArray(folder / (stem + ".cost.bin"), map.m_width, map.m_height, diagnostics.m_costs);
                 size_t valid = 0;
                 float maximumSine = 0;
                 std::vector<float> angles;
+                std::vector<float> tiltMap(map.m_depthValues.size(), 0);
                 for (size_t i = 0; i < map.m_depthValues.size(); ++i)
                 {
                     if (map.m_depthValues[i] <= 0) continue;
                     ++valid;
+                    if (variant.mode == PlaneSweepMatchingMode::PlaneSweep) continue;
                     const auto &p = diagnostics.m_planes[i];
                     const Float3 k{ p.x, p.y, p.z };
                     const float size = length(k);
@@ -158,18 +173,20 @@ int main(int argc, char **argv)
                     const float cosine = std::clamp(dot(k, camera.m_forward) / (size * length(camera.m_forward)), -1.0f, 1.0f);
                     maximumSine = std::max(maximumSine, length(cross(k, camera.m_forward)) / (size * length(camera.m_forward)));
                     angles.push_back(std::acos(cosine) * 180.0f / Pi);
+                    tiltMap[i] = angles.back();
                 }
+                if (compareModes) SaveArray(folder / (stem + ".tilt.bin"), map.m_width, map.m_height, tiltMap);
                 if (!tilt && maximumSine > 1e-4f) throw std::runtime_error("Tilt-off control contains tilted planes.");
                 uint64_t evaluations = 0;
                 for (const auto &level : stats) evaluations += level.m_evaluations;
                 metrics << camera.m_imageId << ',' << tilt << ',' << valid << ',' << map.m_depthValues.size() << ',' << elapsed << ',' << evaluations
-                    << ',' << Quantile(angles, 0.5) << ',' << Quantile(angles, 0.9) << ',' << (!tilt ? maximumSine : 0) << '\n';
+                    << ',' << Quantile(angles, 0.5) << ',' << Quantile(angles, 0.9) << ',' << (!tilt ? maximumSine : 0) << ',' << variant.name << '\n';
                 metrics.flush();
-                std::cout << "VIEW " << view + 1 << '/' << count << " id=" << camera.m_imageId << " tilt=" << tilt
+                std::cout << "VIEW " << view + 1 << '/' << count << " id=" << camera.m_imageId << " variant=" << variant.name
                     << " valid=" << valid << " ms=" << elapsed << " median_tilt=" << Quantile(angles, 0.5) << std::endl;
             }
         }
-        std::cout << "GPU tilt-only comparison completed: " << output.string() << std::endl;
+        std::cout << "GPU comparison completed: " << output.string() << std::endl;
         return 0;
     }
     catch (const std::exception &error) { std::cerr << error.what() << std::endl; return 1; }

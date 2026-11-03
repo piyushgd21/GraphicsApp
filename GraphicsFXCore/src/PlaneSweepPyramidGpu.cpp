@@ -183,7 +183,7 @@ namespace graphicsFX
                 resources.persistentPipeline = true;
             }
             else Check(vkCreateDescriptorSetLayout(m_device, &layout, nullptr, &resources.layout), "Create pyramid descriptor layout");
-            const uint32_t setCount = count + (slanted ? uint32_t(setup.m_planeSweepPatchMatchIterations) + 2u : 0u);
+            const uint32_t setCount = count * (slanted ? uint32_t(setup.m_planeSweepPatchMatchIterations) + 3u : 1u);
             const std::array<VkDescriptorPoolSize, 2> sizes{{ { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 18 * setCount }, { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, storageCount * setCount } }};
             VkDescriptorPoolCreateInfo pool{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
             pool.maxSets = setCount; pool.poolSizeCount = uint32_t(sizes.size()); pool.pPoolSizes = sizes.data();
@@ -232,6 +232,7 @@ namespace graphicsFX
             Resources::Buffer planeReadback{};
             const PlaneSweepPyramidState empty{};
             auto parent = resources.MakeBuffer(sizeof(empty), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, empty.data());
+            auto parentPlanes = parent;
             TextureData dummy; dummy.m_width = dummy.m_height = 1; dummy.m_pixels = { 0, 0, 0, 255 };
             const auto dummyImage = resources.Upload(dummy);
             std::vector<PlaneSweepPyramidStats> stats(count);
@@ -311,10 +312,14 @@ namespace graphicsFX
                 vkCmdBindDescriptorSets(resources.command, VK_PIPELINE_BIND_POINT_COMPUTE, resources.pipelineLayout, 0, 1, &set, 0, nullptr);
                 vkCmdPushConstants(resources.command, resources.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(level), &level);
                 vkCmdDispatch(resources.command, (width + 7) / 8, (height + 7) / 8, 1);
-                if (slanted && l + 1 == count)
+                if (slanted)
                 {
                     auto planeA = resources.MakeBuffer(entries * 16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, false);
                     auto planeB = resources.MakeBuffer(entries * 16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, false);
+                    // Initialization reuses binding 9 for the preceding level's world-space planes.
+                    buffer[5] = parentPlanes;
+                    if (l) resources.Barrier(parentPlanes, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
                     buffer[7] = buffer[4]; buffer[8] = planeA;
                     // Separate descriptor sets preserve each dispatch's bindings until submission.
                     for (uint32_t pass = 1; pass <= level.iterations + 2u; ++pass)
@@ -327,7 +332,7 @@ namespace graphicsFX
                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
                         if (pass == level.iterations + 2u)
                         {
-                            if (diagnostics) planeReadback = resources.CopyForReadback(buffer[7]);
+                            if (diagnostics && l + 1 == count) planeReadback = resources.CopyForReadback(buffer[7]);
                             resources.Barrier(buffer[4], VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_WRITE_BIT,
                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
                             resources.Barrier(buffer[6], VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
@@ -338,9 +343,14 @@ namespace graphicsFX
                         vkCmdBindDescriptorSets(resources.command, VK_PIPELINE_BIND_POINT_COMPUTE, resources.pipelineLayout, 0, 1, &set, 0, nullptr);
                         vkCmdPushConstants(resources.command, resources.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(level), &level);
                         vkCmdDispatch(resources.command, (width + 7) / 8, (height + 7) / 8, 1);
-                        buffer[7] = buffer[8];
-                        buffer[8] = buffer[7].handle == planeA.handle ? planeB : planeA;
+                        // Finalization writes depth state, leaving the winning planes available to the next level.
+                        if (pass <= level.iterations + 1u)
+                        {
+                            buffer[7] = buffer[8];
+                            buffer[8] = buffer[7].handle == planeA.handle ? planeB : planeA;
+                        }
                     }
+                    parentPlanes = buffer[7];
                 }
                 parent = buffer[4];
                 counterReadbacks.push_back(resources.CopyForReadback(buffer[6]));

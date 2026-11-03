@@ -16,6 +16,7 @@ vec4 psV4(float x, float y, float z, float w) { return vec4(x, y, z, w); }
 bool psFinite(float v) { return IsFiniteFloat(v); }
 int psWidth() { return int(paramsBuffer.value.scaledWidth); }
 int psHeight() { return int(paramsBuffer.value.scaledHeight); }
+bool psFinalLevel() { return level.finalLevel != 0u; }
 int psRadius() { return paramsBuffer.value.patchRadius; }
 bool psTiltEnabled() { return (level.flags & 4u) != 0u; }
 float psColorSigma() { return level.colorSigma; }
@@ -64,6 +65,14 @@ float psSeed(int x, int y)
 {
     return x >= 0 && y >= 0 && x < psWidth() && y < psHeight() ? slantedInput.values[y * psWidth() + x].x : 0.0;
 }
+// Binding 9 holds parent depth state during the sweep and parent planes during refinement.
+vec4 psParentPlane(int x, int y)
+{
+    if (level.parentWidth == 0u || level.parentHeight == 0u) return vec4(0.0, 0.0, 0.0, kFloatMax);
+    uvec2 parentPixel = min(uvec2((vec2(x, y) + 0.5) * vec2(level.parentWidth, level.parentHeight) /
+        vec2(psWidth(), psHeight())), uvec2(level.parentWidth - 1u, level.parentHeight - 1u));
+    return parentState.values[parentPixel.y * level.parentWidth + parentPixel.x];
+}
 vec4 psReadPlane(int x, int y)
 {
     return x >= 0 && y >= 0 && x < psWidth() && y < psHeight() ? slantedInput.values[y * psWidth() + x] : vec4(0.0, 0.0, 0.0, kFloatMax);
@@ -86,8 +95,8 @@ void runSlanted(uvec2 pixel)
     else
     {
         vec4 result = psFinalize(x, y);
-        stateOutput.values[index] = result;
         counters.values[index].w = uint(psStatus(x, y, result));
+        stateOutput.values[index] = psLevelState(x, y, result);
     }
     counters.values[index].x += psEvaluationCount;
 }

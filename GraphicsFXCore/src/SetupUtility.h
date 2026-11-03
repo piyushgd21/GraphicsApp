@@ -191,7 +191,7 @@ namespace graphicsFX
         bool m_planeSweepUseHomographyWarping{ false }; //Enables undistorted homography warping for plane sweep.
         PlaneSweepExecutionMode m_planeSweepExecutionMode{ PlaneSweepExecutionMode::CpuOnly }; //Stores the PlaneSweep depth-search execution mode.
         PlaneSweepMatchingMode m_planeSweepMatchingMode{ PlaneSweepMatchingMode::PlaneSweep }; //Explicit algorithm choice; independent of CPU/GPU execution.
-        int m_planeSweepPatchMatchIterations{ 3 }; //Synchronous plane propagation/refinement passes.
+        int m_planeSweepPatchMatchIterations{ 3 }; //Synchronous plane propagation/refinement passes per pyramid level.
         bool m_planeSweepPatchMatchTiltEnabled{ true }; //Allows surface tilt; false is the weighted front-facing control.
         float m_planeSweepPatchMatchColorSigma{ 0.15f }; //Support color scale, using RGB L1 distance in [0,3].
         float m_planeSweepPatchMatchSpatialSigma{ 2.0f }; //Support distance scale in matching-level pixels.

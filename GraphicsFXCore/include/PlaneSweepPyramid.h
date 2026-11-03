@@ -45,7 +45,14 @@ namespace graphicsFX
         const SweepUtility::PlaneSweepDepthRange &range,
         std::vector<PlaneSweepPyramidStats> *statistics = nullptr);
 
-    // Explicit optional matching mode, seeded by the existing pyramid and refined at its finest level.
+    // Refines one level and returns world-space planes for initialization at the next resolution.
+    std::vector<Float4> RefinePlaneSweepSlantedLevelCpu(
+        const PlaneSweepPyramidLevel &level, const ColmapSetup &setup,
+        const SweepUtility::PlaneSweepDepthRange &range, std::vector<PlaneSweepPyramidState> &state,
+        const std::vector<Float4> &parentPlanes, uint32_t parentWidth, uint32_t parentHeight,
+        bool finalLevel, PlaneSweepPyramidStats &statistics);
+
+    // Explicit optional matching mode, with tilted-plane refinement at every pyramid level.
     void ValidatePlaneSweepSlantedSetup(const ColmapSetup &setup);
     SweepUtility::PlaneSweepDepthMap RunPlaneSweepSlantedCpu(
         const SweepUtility::PlaneSweepImage &reference,

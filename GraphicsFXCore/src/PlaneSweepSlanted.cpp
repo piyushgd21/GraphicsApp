@@ -1,7 +1,6 @@
 #include "PlaneSweepPyramid.h"
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -32,8 +31,11 @@ namespace graphicsFX
         {
             const PlaneSweepPyramidLevel &images;
             const ColmapSetup &setup;
-            const SweepUtility::PlaneSweepDepthMap &seed;
+            const std::vector<PlaneSweepPyramidState> &seed;
             const SweepUtility::PlaneSweepDepthRange &range;
+            const std::vector<vec4> &parentPlanes;
+            uint32_t parentWidth, parentHeight;
+            bool finalLevel;
             const std::vector<vec4> *planes{};
             uint64_t evaluations{};
             void psCountEvaluation() { ++evaluations; }
@@ -48,8 +50,9 @@ namespace graphicsFX
             static float psClamp(float a, float b, float c) { return std::clamp(a, b, c); }
             static float psFloor(float v) { return std::floor(v); }
             static bool psFinite(float v) { return std::isfinite(v); }
-            int psWidth() const { return int(seed.m_width); }
-            int psHeight() const { return int(seed.m_height); }
+            int psWidth() const { return int(images.m_reference.m_texture.m_width); }
+            int psHeight() const { return int(images.m_reference.m_texture.m_height); }
+            bool psFinalLevel() const { return finalLevel; }
             int psRadius() const { return setup.m_planeSweepPatchRadius; }
             bool psTiltEnabled() const { return setup.m_planeSweepPatchMatchTiltEnabled; }
             float psColorSigma() const { return setup.m_planeSweepPatchMatchColorSigma; }
@@ -100,11 +103,19 @@ namespace graphicsFX
             }
             float psSeed(int x, int y) const
             {
-                return x >= 0 && y >= 0 && x < psWidth() && y < psHeight() ? seed.m_depthValues[size_t(y) * seed.m_width + size_t(x)] : 0.0f;
+                return x >= 0 && y >= 0 && x < psWidth() && y < psHeight() ? seed[size_t(y) * size_t(psWidth()) + size_t(x)][0] : 0.0f;
+            }
+            // Map pixel centers to the nearest parent without blending across depth boundaries.
+            vec4 psParentPlane(int x, int y)
+            {
+                if (parentPlanes.empty() || !parentWidth || !parentHeight) return psInvalid();
+                const uint32_t px = std::min(uint32_t((float(x) + 0.5f) * float(parentWidth) / float(psWidth())), parentWidth - 1);
+                const uint32_t py = std::min(uint32_t((float(y) + 0.5f) * float(parentHeight) / float(psHeight())), parentHeight - 1);
+                return parentPlanes[size_t(py) * parentWidth + px];
             }
             vec4 psReadPlane(int x, int y)
             {
-                return x >= 0 && y >= 0 && x < psWidth() && y < psHeight() ? (*planes)[size_t(y) * seed.m_width + size_t(x)] : psInvalid();
+                return x >= 0 && y >= 0 && x < psWidth() && y < psHeight() ? (*planes)[size_t(y) * size_t(psWidth()) + size_t(x)] : psInvalid();
             }
 #define PS_ACCUM double
 #include "../../Shaders/planeSweepSlanted.inl"
@@ -112,48 +123,50 @@ namespace graphicsFX
         };
     }
 
-    SweepUtility::PlaneSweepDepthMap RunPlaneSweepSlantedCpu(const SweepUtility::PlaneSweepImage &reference,
-        const std::vector<SweepUtility::PlaneSweepImage> &sources, const ColmapSetup &setup,
-        const SweepUtility::PlaneSweepDepthRange &range, std::vector<PlaneSweepPyramidStats> *statistics)
+    // Refines one level and returns world-space planes for initialization at the next resolution.
+    std::vector<Float4> RefinePlaneSweepSlantedLevelCpu(
+        const PlaneSweepPyramidLevel &level, const ColmapSetup &setup,
+        const SweepUtility::PlaneSweepDepthRange &range, std::vector<PlaneSweepPyramidState> &state,
+        const std::vector<Float4> &parentPlanes, uint32_t parentWidth, uint32_t parentHeight,
+        bool finalLevel, PlaneSweepPyramidStats &statistics)
     {
-        ValidatePlaneSweepSlantedSetup(setup);
-        const auto start = std::chrono::steady_clock::now();
-        // Retain provisional estimates until the weighted plane costs have been evaluated.
-        ColmapSetup seedSetup = setup;
-        seedSetup.m_planeSweepMatchingMode = PlaneSweepMatchingMode::PlaneSweep;
-        seedSetup.m_planeSweepConfidenceEnabled = false;
-        seedSetup.m_planeSweepTextureRejectionEnabled = false;
-        seedSetup.m_planeSweepCostThreshold = 10.0f;
-        std::vector<PlaneSweepPyramidStats> stats;
-        auto seed = RunPlaneSweepPyramidCpu(reference, sources, seedSetup, range, &stats);
-        const auto pyramid = BuildPlaneSweepPyramid(reference, sources, setup);
-        SlantedMatcher matcher{ pyramid.back(), setup, seed, range };
-        std::vector<vec4> planes(seed.m_depthValues.size()), next(planes.size());
+        SlantedMatcher matcher{ level, setup, state, range, parentPlanes, parentWidth, parentHeight, finalLevel };
+        const size_t width = size_t(matcher.psWidth());
+        std::vector<vec4> planes(state.size()), next(planes.size());
         for (int y = 0; y < matcher.psHeight(); ++y)
-            for (int x = 0; x < matcher.psWidth(); ++x) planes[size_t(y) * seed.m_width + size_t(x)] = matcher.psInitialize(x, y);
+            for (int x = 0; x < matcher.psWidth(); ++x) planes[size_t(y) * width + size_t(x)] = matcher.psInitialize(x, y);
         for (int iteration = 0; iteration < setup.m_planeSweepPatchMatchIterations; ++iteration)
         {
             matcher.planes = &planes;
             for (int y = 0; y < matcher.psHeight(); ++y)
-                for (int x = 0; x < matcher.psWidth(); ++x) next[size_t(y) * seed.m_width + size_t(x)] = matcher.psRefine(x, y, iteration);
+                for (int x = 0; x < matcher.psWidth(); ++x) next[size_t(y) * width + size_t(x)] = matcher.psRefine(x, y, iteration);
             planes.swap(next);
         }
         matcher.planes = &planes;
-        stats.back().m_accepted = stats.back().m_confidenceRejected = stats.back().m_textureRejected = 0;
+        statistics.m_accepted = statistics.m_confidenceRejected = statistics.m_textureRejected = 0;
         for (int y = 0; y < matcher.psHeight(); ++y)
             for (int x = 0; x < matcher.psWidth(); ++x)
             {
-                const size_t index = size_t(y) * seed.m_width + size_t(x);
+                const size_t index = size_t(y) * width + size_t(x);
                 const auto result = matcher.psFinalize(x, y);
-                seed.m_depthValues[index] = result.x;
                 const int status = matcher.psStatus(x, y, result);
-                if (status == 3) ++stats.back().m_accepted;
-                else if (status == 2) ++stats.back().m_confidenceRejected;
-                else if (status == 5) ++stats.back().m_textureRejected;
+                const auto output = matcher.psLevelState(x, y, result);
+                state[index] = { output.x, output.y, output.z, output.w };
+                if (status == 3) ++statistics.m_accepted;
+                else if (status == 2) ++statistics.m_confidenceRejected;
+                else if (status == 5) ++statistics.m_textureRejected;
             }
-        stats.back().m_evaluations += matcher.evaluations;
-        stats.back().m_milliseconds = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
-        if (statistics) *statistics = std::move(stats);
-        return seed;
+        statistics.m_evaluations += matcher.evaluations;
+        return planes;
+    }
+
+    // Runs the shared pyramid driver in slanted mode, including per-level refinement.
+    SweepUtility::PlaneSweepDepthMap RunPlaneSweepSlantedCpu(const SweepUtility::PlaneSweepImage &reference,
+        const std::vector<SweepUtility::PlaneSweepImage> &sources, const ColmapSetup &setup,
+        const SweepUtility::PlaneSweepDepthRange &range, std::vector<PlaneSweepPyramidStats> *statistics)
+    {
+        ColmapSetup slantedSetup = setup;
+        slantedSetup.m_planeSweepMatchingMode = PlaneSweepMatchingMode::PatchMatchSlanted;
+        return RunPlaneSweepPyramidCpu(reference, sources, slantedSetup, range, statistics);
     }
 }
