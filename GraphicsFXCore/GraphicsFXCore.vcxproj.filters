@@ -95,6 +95,18 @@
     <ClCompile Include="src\PlaneSweepGpu.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\PlaneSweepPyramid.cpp">
+      <Filter>Source Files\Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="src\PlaneSweepPyramidCpu.cpp">
+      <Filter>Source Files\Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="src\PlaneSweepSlanted.cpp">
+      <Filter>Source Files\Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="src\PlaneSweepPyramidGpu.cpp">
+      <Filter>Source Files\Utilities</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\GraphicsUtility.h">
@@ -190,6 +202,9 @@
     <ClInclude Include="include\PlaneSweepGpu.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="include\PlaneSweepPyramid.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="..\Asset\checker_blue.png">
@@ -217,6 +232,16 @@
       <Filter>Asset</Filter>
     </None>
     <None Include="..\Shaders\default.vert">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="..\Shaders\planeSweepPyramid.comp">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="..\Shaders\planeSweepPyramid.glsl"><Filter>Shaders</Filter></None>
+    <None Include="..\Shaders\planeSweepPatchMatch.comp"><Filter>Shaders</Filter></None>
+    <None Include="..\Shaders\planeSweepSlanted.glsl"><Filter>Shaders</Filter></None>
+    <None Include="..\Shaders\planeSweepSlanted.inl"><Filter>Shaders</Filter></None>
+    <None Include="..\Shaders\planeSweepMatching.glsl">
       <Filter>Shaders</Filter>
     </None>
     <None Include="..\Shaders\default.frag">

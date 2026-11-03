@@ -7,6 +7,7 @@
 #include <array>
 
 #include "MultiViewUtility.h"
+#include "PlaneSweepPyramid.h"
 
 namespace graphicsFX
 {
@@ -161,6 +162,14 @@ namespace graphicsFX
 			PlaneSweepRealComparisonStats *stats = nullptr,
 			uint32_t bucketIndex = 0
 		);
+        bool RunCoarseToFineDepthMap(
+            const SweepUtility::PlaneSweepImage &reference,
+            const std::vector<SweepUtility::PlaneSweepImage> &sources,
+            const ColmapSetup &setup, const SweepUtility::PlaneSweepDepthRange &range,
+            SweepUtility::PlaneSweepDepthMap &depthMap,
+            std::vector<PlaneSweepPyramidStats> *statistics = nullptr,
+            std::string *failureReason = nullptr,
+            PlaneSweepSlantedDiagnostics *diagnostics = nullptr);
 		bool RunTextureStdDevSmokeTest(
 			const std::vector<std::vector<uint8_t>> &casePixels,
 			const std::vector<float> &caseParameters,
@@ -216,5 +225,8 @@ namespace graphicsFX
 		VkShaderModule m_shaderModule{ VK_NULL_HANDLE };
 		VkPipelineLayout m_pipelineLayout{ VK_NULL_HANDLE };
 		VkPipeline m_computePipeline{ VK_NULL_HANDLE };
+        VkDescriptorSetLayout m_pyramidSetLayouts[4]{};
+        VkPipelineLayout m_pyramidPipelineLayouts[4]{};
+        VkPipeline m_pyramidPipelines[4]{}; // Plane sweep / slanted, each with float / FP64 costs.
 	};
 }

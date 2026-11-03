@@ -1132,7 +1132,7 @@ void Scene::DrawColmap(const ProgramSetup &programSetup, const SceneObjectShader
         if (!pointCloudResult.m_points.empty())
         {
             sparsePointCloudLoaded = true;
-            AddColmapPointCloudObject(std::move(pointCloudResult.m_points), pointCloudShaderFiles, 3.0f);
+            AddColmapPointCloudObject(std::move(pointCloudResult.m_points), pointCloudShaderFiles, 4.0f);
 
             UIUtility::Print("Loaded " + std::to_string(pointCloudResult.m_pointsDisplayed) + " COLMAP sparse points from points3D with " + std::to_string(pointCloudResult.m_trackMatches) +
                 " loaded camera track observations.\n");
@@ -1355,7 +1355,7 @@ void Scene::DrawColmap(const ProgramSetup &programSetup, const SceneObjectShader
         if (!pointCloudResult.m_points.empty())
         {
             const std::size_t pointCount = pointCloudResult.m_points.size();
-            AddColmapPointCloudObject(std::move(pointCloudResult.m_points), pointCloudShaderFiles, 3.0f);
+            AddColmapPointCloudObject(std::move(pointCloudResult.m_points), pointCloudShaderFiles, 4.0f);
 
             UIUtility::Print("Loaded " + std::to_string(pointCount) + " COLMAP plane sweep points from " + std::to_string(pointCloudResult.m_referenceImagesProcessed) + " reference images.\n");
         }

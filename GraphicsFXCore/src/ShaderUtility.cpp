@@ -55,10 +55,11 @@ namespace graphicsFX
                 ++compiledCount;
             }
 
-            if (sourceFile.filename() == "planeSweepDepthMapSmokeTest.comp")
+            if (sourceFile.filename() == "planeSweepDepthMapSmokeTest.comp" || sourceFile.filename() == "planeSweepPyramid.comp" || sourceFile.filename() == "planeSweepPatchMatch.comp")
             {
                 const std::filesystem::path fp64OutputFile =
-                    outputFolder / "planeSweepDepthMapFp64.comp.spv";
+                    outputFolder / (sourceFile.filename() == "planeSweepPatchMatch.comp" ? "planeSweepPatchMatchFp64.comp.spv" :
+                        (sourceFile.filename() == "planeSweepPyramid.comp" ? "planeSweepPyramidFp64.comp.spv" : "planeSweepDepthMapFp64.comp.spv"));
 
 #if !defined(GRAPHICSAPP_ENABLE_PHASE_2PB_GPU_TRACE)
                 if (ShouldCompileShader(sourceFile, fp64OutputFile,
@@ -283,6 +284,19 @@ namespace graphicsFX
             return true;
         }
 
+        if (sourceFile.filename() == "planeSweepPyramid.comp" || sourceFile.filename() == "planeSweepDepthMapSmokeTest.comp" || sourceFile.filename() == "planeSweepPatchMatch.comp")
+        {
+            const auto sharedTime = std::filesystem::last_write_time(sourceFile.parent_path() / "planeSweepMatching.glsl", errorCode);
+            if (errorCode || outputTime < sharedTime) return true;
+            if (sourceFile.filename() != "planeSweepDepthMapSmokeTest.comp")
+            {
+                for (const char *dependency : { "planeSweepPyramid.glsl", "planeSweepSlanted.glsl", "planeSweepSlanted.inl" })
+                {
+                    const auto time = std::filesystem::last_write_time(sourceFile.parent_path() / dependency, errorCode);
+                    if (errorCode || outputTime < time) return true;
+                }
+            }
+        }
         return outputTime < sourceTime;
     }
 

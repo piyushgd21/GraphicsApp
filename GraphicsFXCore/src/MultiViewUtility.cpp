@@ -10,6 +10,7 @@
 
 #include "PlaneSweepGpu.h"
 #include "PlaneSweepGpuTypes.h"
+#include "PlaneSweepPyramid.h"
 
 #include "PathUtility.h"
 #include "StringUtility.h"
@@ -2080,7 +2081,7 @@ namespace graphicsFX
             int patchRadius,
             float alphaThreshold,
             int minimumOpaqueSamples,
-            float &rank)
+            float &rank, bool pixelCenterCorrect)
         {
             int sampleCount = 1;
             int darkerCount = 0;
@@ -2095,10 +2096,14 @@ namespace graphicsFX
                     }
 
                     Float4 color;
-                    if (!SamplePlaneSweepPixel(
-                            image,
-                            x + static_cast<float>(offsetX),
-                            y + static_cast<float>(offsetY),
+                    float sampleX = x + static_cast<float>(offsetX), sampleY = y + static_cast<float>(offsetY);
+                if (pixelCenterCorrect)
+                {
+                    if (sampleX >= -1e-4f && sampleX <= float(image.m_texture.m_width - 1) + 1e-4f) sampleX = std::clamp(sampleX, 0.0f, float(image.m_texture.m_width - 1));
+                    if (sampleY >= -1e-4f && sampleY <= float(image.m_texture.m_height - 1) + 1e-4f) sampleY = std::clamp(sampleY, 0.0f, float(image.m_texture.m_height - 1));
+                }
+                if (!SamplePlaneSweepPixel(
+                            image, sampleX, sampleY,
                             color) ||
                         color.w <= alphaThreshold)
                     {
@@ -2216,9 +2221,22 @@ namespace graphicsFX
             float minimumOpaquePatchRatio,
             PatchCostMethod patchCostMethod,
             float adCensusWeight,
-            float &cost
+            float &cost,
+            bool pixelCenterCorrect
         )
         {
+            const auto projectPoint = [pixelCenterCorrect](const ColmapCameraData &camera,
+                const ColmapCameraIntrinsicData &intrinsic, const Float3 &point, float &px, float &py, float &pz)
+            {
+                const bool valid = ProjectPoint(camera, intrinsic, point, px, py, pz);
+                if (pixelCenterCorrect)
+                {
+                    px -= 0.5f; py -= 0.5f;
+                    if (px >= -1e-4f && px <= float(intrinsic.m_width - 1) + 1e-4f) px = std::clamp(px, 0.0f, float(intrinsic.m_width - 1));
+                    if (py >= -1e-4f && py <= float(intrinsic.m_height - 1) + 1e-4f) py = std::clamp(py, 0.0f, float(intrinsic.m_height - 1));
+                }
+                return valid;
+            };
             float totalCost = 0.0f;
             int validSourceViews = 0;
             const int patchWidth = (patchRadius * 2) + 1;
@@ -2282,7 +2300,7 @@ namespace graphicsFX
                     Float4 centerColor;
 
                     sourceCenterValid =
-                        ProjectPoint(sourceImage.m_camera, sourceImage.m_intrinsic,
+                        projectPoint(sourceImage.m_camera, sourceImage.m_intrinsic,
                             centerPoint, centerX, centerY, centerDepth) &&
                         SamplePlaneSweepPixel(sourceImage, centerX, centerY, centerColor) &&
                         centerColor.w > alphaThreshold;
@@ -2312,7 +2330,7 @@ namespace graphicsFX
                         float sourceX = 0.0f;
                         float sourceY = 0.0f;
                         float sourceDepth = 0.0f;
-                        if (!ProjectPoint(sourceImage.m_camera, sourceImage.m_intrinsic, point, sourceX, sourceY, sourceDepth))
+                        if (!projectPoint(sourceImage.m_camera, sourceImage.m_intrinsic, point, sourceX, sourceY, sourceDepth))
                         {
                             ++patchSamplesProjFailures;
                             continue;
@@ -2348,10 +2366,10 @@ namespace graphicsFX
                             float sourceRank = 0.0f;
                             if (!ComputeLocalRank(
                                     referenceImage, referenceX, referenceY, referenceIntensity,
-                                    patchRadius, alphaThreshold, minimumOpaqueSamples, referenceRank) ||
+                                    patchRadius, alphaThreshold, minimumOpaqueSamples, referenceRank, pixelCenterCorrect) ||
                                 !ComputeLocalRank(
                                     sourceImage, sourceX, sourceY, sourceIntensity,
-                                    patchRadius, alphaThreshold, minimumOpaqueSamples, sourceRank))
+                                    patchRadius, alphaThreshold, minimumOpaqueSamples, sourceRank, pixelCenterCorrect))
                             {
                                 continue;
                             }
@@ -2423,7 +2441,7 @@ namespace graphicsFX
                     const std::string srcName = sourceImage.m_camera.m_name.empty() ? ("image_" + std::to_string(srcId)) : sourceImage.m_camera.m_name;
                     // compute projected center for summary
                     float centerPX = 0.0f, centerPY = 0.0f, centerPDepth = 0.0f;
-                    const bool centerProj = ProjectPoint(sourceImage.m_camera, sourceImage.m_intrinsic, UnprojectPixel(referenceImage.m_camera, referenceImage.m_intrinsic, x, y, depth), centerPX, centerPY, centerPDepth);
+                    const bool centerProj = projectPoint(sourceImage.m_camera, sourceImage.m_intrinsic, UnprojectPixel(referenceImage.m_camera, referenceImage.m_intrinsic, x, y, depth), centerPX, centerPY, centerPDepth);
                     const bool centerInside = centerProj && centerPX >= 0.0f && centerPY >= 0.0f && centerPX < static_cast<float>(sourceImage.m_texture.m_width) && centerPY < static_cast<float>(sourceImage.m_texture.m_height);
                     // reference patch validity and required counts
                     const int refRequiredOpaque = minimumOpaqueSamples;
@@ -3178,8 +3196,12 @@ namespace graphicsFX
                         continue;
                     }
 
-                    const float referenceX = static_cast<float>((static_cast<std::size_t>(scaledX) * referenceImage.m_texture.m_width) / scaledWidth);
-                    const float referenceY = static_cast<float>((static_cast<std::size_t>(scaledY) * referenceImage.m_texture.m_height) / scaledHeight);
+                    const float referenceX = setup.m_planeSweepCoarseToFineEnabled
+                        ? (float(scaledX) + 0.5f) * float(referenceImage.m_texture.m_width) / float(scaledWidth) - 0.5f
+                        : static_cast<float>((static_cast<std::size_t>(scaledX) * referenceImage.m_texture.m_width) / scaledWidth);
+                    const float referenceY = setup.m_planeSweepCoarseToFineEnabled
+                        ? (float(scaledY) + 0.5f) * float(referenceImage.m_texture.m_height) / float(scaledHeight) - 0.5f
+                        : static_cast<float>((static_cast<std::size_t>(scaledY) * referenceImage.m_texture.m_height) / scaledHeight);
                     Float4 referenceColor;
                     if (!MultiViewUtility::MultiViewPlaneSweepUtility::SamplePlaneSweepPixel(referenceImage, referenceX, referenceY, referenceColor) || referenceColor.w <= alphaThreshold)
                     {
@@ -3409,14 +3431,16 @@ namespace graphicsFX
                     float x = 0.0f;
                     float y = 0.0f;
                     float projectedDepth = 0.0f;
-                    if (!ProjectPoint(comparisonDepthMap.m_camera, comparisonDepthMap.m_intrinsic, pointCandidate.m_position, x, y, projectedDepth) ||
+                    const bool projected = ProjectPoint(comparisonDepthMap.m_camera, comparisonDepthMap.m_intrinsic, pointCandidate.m_position, x, y, projectedDepth);
+                    if (setup.m_planeSweepCoarseToFineEnabled) { x -= 0.5f; y -= 0.5f; }
+                    if (!projected ||
                         x < 0.0f || y < 0.0f || x >= static_cast<float>(comparisonDepthMap.m_imageWidth) || y >= static_cast<float>(comparisonDepthMap.m_imageHeight))
                     {
                         continue;
                     }
 
-                    const int centerX = static_cast<int>(std::lround((x / static_cast<float>(std::max(1U, comparisonDepthMap.m_imageWidth))) * comparisonDepthMap.m_width));
-                    const int centerY = static_cast<int>(std::lround((y / static_cast<float>(std::max(1U, comparisonDepthMap.m_imageHeight))) * comparisonDepthMap.m_height));
+                    const int centerX = setup.m_planeSweepCoarseToFineEnabled ? int(std::lround((x + 0.5f) * float(comparisonDepthMap.m_width) / float(comparisonDepthMap.m_imageWidth) - 0.5f)) : static_cast<int>(std::lround((x / static_cast<float>(std::max(1U, comparisonDepthMap.m_imageWidth))) * comparisonDepthMap.m_width));
+                    const int centerY = setup.m_planeSweepCoarseToFineEnabled ? int(std::lround((y + 0.5f) * float(comparisonDepthMap.m_height) / float(comparisonDepthMap.m_imageHeight) - 0.5f)) : static_cast<int>(std::lround((y / static_cast<float>(std::max(1U, comparisonDepthMap.m_imageHeight))) * comparisonDepthMap.m_height));
                     float smallestRelativeDifference = std::numeric_limits<float>::max();
                     for (int sampleY = centerY - sampleRadius; sampleY <= centerY + sampleRadius; ++sampleY)
                     {
@@ -3617,9 +3641,19 @@ namespace graphicsFX
         }
 
         //Builds COLMAP points from plane sweep reconstruction.
-        ColmapPlaneSweepResult MultiViewUtility::BuildColmapPlaneSweepPointCloud(const ColmapCameraReadResult &colmapData, const ColmapSetup &setup, PlaneSweepExperimentMetrics *metricsPtr, PlaneSweepGpu *planeSweepGpuPtr)
+        ColmapPlaneSweepResult MultiViewUtility::BuildColmapPlaneSweepPointCloud(const ColmapCameraReadResult &colmapData, const ColmapSetup &requestedSetup, PlaneSweepExperimentMetrics *metricsPtr, PlaneSweepGpu *planeSweepGpuPtr)
         {
+            ColmapSetup setup = requestedSetup;
+            const bool slanted = setup.m_planeSweepMatchingMode == PlaneSweepMatchingMode::PatchMatchSlanted;
+            if (slanted)
+            {
+                ValidatePlaneSweepSlantedSetup(setup);
+                setup.m_planeSweepCoarseToFineEnabled = true; //The selected algorithm includes pyramid initialization.
+                if (setup.m_planeSweepDebugEnabled)
+                    throw std::invalid_argument("Single-pixel sweep diagnostics require PlaneSweepMatchingMode=PlaneSweep.");
+            }
             ColmapPlaneSweepResult result;
+            UIUtility::Print(std::string("PlaneSweep matching mode: ") + (slanted ? "PatchMatchSlanted" : "PlaneSweep") + "\n");
             UIUtility::Print(std::string("PlaneSweep execution mode: ") + PlaneSweepExecutionModeName(setup.m_planeSweepExecutionMode) + "\n");
             static constexpr bool runLegacySyntheticSmokeTests = false;
             static bool textureRejectionTestAttempted = false;
@@ -4197,6 +4231,63 @@ namespace graphicsFX
                 }
 #endif
 
+                if (setup.m_planeSweepCoarseToFineEnabled)
+                {
+                    MultiViewPlaneSweepUtility::PlaneSweepDepthMap pyramidMap;
+                    std::vector<PlaneSweepPyramidStats> pyramidStats;
+                    std::string failure;
+                    bool gpuOk = false;
+                    if (setup.m_planeSweepExecutionMode != PlaneSweepExecutionMode::CpuOnly && planeSweepGpuPtr)
+                        gpuOk = planeSweepGpuPtr->RunCoarseToFineDepthMap(referenceImage, sourceImages, setup, depthRange,
+                            pyramidMap, &pyramidStats, &failure);
+                    if (setup.m_planeSweepExecutionMode == PlaneSweepExecutionMode::CpuGpuCompare && gpuOk)
+                    {
+                        ColmapSetup cpuSetup = setup;
+                        cpuSetup.m_planeSweepSavePyramidDepth = false;
+                        auto cpuMap = RunPlaneSweepPyramidCpu(referenceImage, sourceImages, cpuSetup, depthRange);
+                        std::size_t differences = 0;
+                        double maxError = 0;
+                        for (std::size_t i = 0; i < cpuMap.m_depthValues.size(); ++i)
+                        {
+                            const float c = cpuMap.m_depthValues[i], g = pyramidMap.m_depthValues[i];
+                            const double error = std::fabs(double(c) - g);
+                            maxError = std::max(maxError, error);
+                            if (!std::isfinite(g) || (c > 0) != (g > 0) || error > 2e-4 * std::max(1.0, double(c))) ++differences;
+                        }
+                        UIUtility::Print("Coarse-to-fine CPU/GPU comparison: differences=" + std::to_string(differences) +
+                            ", max depth error=" + std::to_string(maxError) + ". GPU output used.\n");
+                    }
+                    if (!gpuOk)
+                    {
+                        if (slanted && setup.m_planeSweepExecutionMode != PlaneSweepExecutionMode::CpuOnly)
+                            throw std::runtime_error("PatchMatchSlanted GPU execution failed: " +
+                                (failure.empty() ? std::string("GPU unavailable") : failure));
+                        if (setup.m_planeSweepExecutionMode != PlaneSweepExecutionMode::CpuOnly)
+                            UIUtility::Print("Coarse-to-fine GPU fallback to the equivalent CPU pyramid: " +
+                                (failure.empty() ? std::string("GPU unavailable") : failure) + "\n");
+                        pyramidMap = RunPlaneSweepPyramidCpu(referenceImage, sourceImages, setup, depthRange, &pyramidStats);
+                    }
+                    if (metricsPtr && !pyramidStats.empty()) metricsPtr->m_buildReferencePointsMs += pyramidStats.back().m_milliseconds;
+                    if (metricsPtr)
+                        for (const auto &level : pyramidStats)
+                        {
+                            metricsPtr->m_pyramidCandidates += level.m_evaluations;
+                            metricsPtr->m_pyramidWidenedSearches += level.m_widened;
+                            metricsPtr->m_pyramidGlobalRecoveries += level.m_globalFallbacks;
+                        }
+                    if (!pyramidStats.empty())
+                    {
+                        result.m_pointsRejectedTexture += size_t(pyramidStats.back().m_textureRejected);
+                        result.m_pointsRejectedConfidence += size_t(pyramidStats.back().m_confidenceRejected);
+                    }
+                    BuildPlaneSweepPointCandidatesFromDepthMap(setup, referenceImage, pyramidMap, depthMaps.size(), pointCandidates);
+                    if (MultiViewPlaneSweepUtility::SaveDepthOutput(setup, referenceImage.m_camera,
+                        pyramidMap.m_depthValues, pyramidMap.m_width, pyramidMap.m_height)) ++result.m_depthFilesSaved;
+                    ++result.m_referenceImagesProcessed;
+                    if (setup.m_planeSweepCrossViewConsistencyEnabled) depthMaps.push_back(std::move(pyramidMap));
+                    continue;
+                }
+
                 MultiViewPlaneSweepUtility::PlaneSweepDepthMap depthMap;
                 const std::size_t depthMapIndex = depthMaps.size();
                 const std::size_t candidatesBeforeReference = pointCandidates.size();
@@ -4381,7 +4472,7 @@ namespace graphicsFX
                 }
             }
 
-            if (setup.m_planeSweepExecutionMode == PlaneSweepExecutionMode::Gpu)
+            if (!setup.m_planeSweepCoarseToFineEnabled && setup.m_planeSweepExecutionMode == PlaneSweepExecutionMode::Gpu)
             {
                 std::ostringstream summary; summary.precision(9);
                 summary << "PlaneSweep GPU production summary:\nReferences processed: " << result.m_referenceImagesProcessed
@@ -4402,7 +4493,7 @@ namespace graphicsFX
                     << "\nCPU candidate materialization: " << gpuTotals.m_candidateMaterializationMs << " ms\n";
                 UIUtility::Print(summary.str());
             }
-            else if (setup.m_planeSweepExecutionMode == PlaneSweepExecutionMode::CpuGpuCompare)
+            else if (!setup.m_planeSweepCoarseToFineEnabled && setup.m_planeSweepExecutionMode == PlaneSweepExecutionMode::CpuGpuCompare)
             {
                 std::size_t referencesCompared = 0, comparisonFailures = 0;
                 std::size_t totalDepthEntries = 0, totalMeaningfulSamples = 0, totalCpuAccepted = 0, totalGpuAccepted = 0;

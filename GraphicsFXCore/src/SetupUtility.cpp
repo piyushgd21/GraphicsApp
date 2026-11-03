@@ -788,10 +788,29 @@ namespace graphicsFX
         ApplyInt(values, "COLMAP.DISPLAYEVERYNTHPIXEL", setup.m_colmap.m_displayEveryNthPixel, 1, 1000000);
         ApplyBool(values, "COLMAP.PLANESWEEPENABLED", setup.m_colmap.m_planeSweepEnabled);
         ApplyPlaneSweepExecutionMode(values, "COLMAP.PLANESWEEPEXECUTIONMODE", setup.m_colmap.m_planeSweepExecutionMode);
+        {
+            const auto found = values.find("COLMAP.PLANESWEEPMATCHINGMODE");
+            if (found != values.end())
+            {
+                const auto mode = NormalizeName(found->second);
+                if (mode == "PLANESWEEP") setup.m_colmap.m_planeSweepMatchingMode = PlaneSweepMatchingMode::PlaneSweep;
+                else if (mode == "PATCHMATCHSLANTED") setup.m_colmap.m_planeSweepMatchingMode = PlaneSweepMatchingMode::PatchMatchSlanted;
+                else throw std::invalid_argument("PlaneSweepMatchingMode must be PlaneSweep or PatchMatchSlanted.");
+            }
+        }
+        ApplyInt(values, "COLMAP.PLANESWEEPPATCHMATCHITERATIONS", setup.m_colmap.m_planeSweepPatchMatchIterations, 1, 12);
+        ApplyBool(values, "COLMAP.PLANESWEEPPATCHMATCHTILTENABLED", setup.m_colmap.m_planeSweepPatchMatchTiltEnabled);
+        ApplyFloat(values, "COLMAP.PLANESWEEPPATCHMATCHCOLORSIGMA", setup.m_colmap.m_planeSweepPatchMatchColorSigma, 0.001f, 3.0f);
+        ApplyFloat(values, "COLMAP.PLANESWEEPPATCHMATCHSPATIALSIGMA", setup.m_colmap.m_planeSweepPatchMatchSpatialSigma, 0.1f, 32.0f);
         ApplyInt(values, "COLMAP.PLANESWEEPREFERENCESTEP", setup.m_colmap.m_planeSweepReferenceStep, 1, 1000000);
         ApplyInt(values, "COLMAP.PLANESWEEPSOURCECOUNT", setup.m_colmap.m_planeSweepSourceCount, 1, 128);
         ApplyInt(values, "COLMAP.PLANESWEEPPLANECOUNT", setup.m_colmap.m_planeSweepPlaneCount, 2, 4096);
         ApplyFloat(values, "COLMAP.PLANESWEEPIMAGESCALE", setup.m_colmap.m_planeSweepImageScale, 0.01f, 1.0f);
+        ApplyBool(values, "COLMAP.PLANESWEEPCOARSETOFINEENABLED", setup.m_colmap.m_planeSweepCoarseToFineEnabled);
+        ApplyInt(values, "COLMAP.PLANESWEEPPYRAMIDLEVELS", setup.m_colmap.m_planeSweepPyramidLevels, 1, 6);
+        ApplyInt(values, "COLMAP.PLANESWEEPLOCALSAMPLES", setup.m_colmap.m_planeSweepLocalSamples, 3, 33);
+        setup.m_colmap.m_planeSweepLocalSamples |= 1;
+        ApplyBool(values, "COLMAP.PLANESWEEPSAVEPYRAMIDDEPTH", setup.m_colmap.m_planeSweepSavePyramidDepth);
         ApplyInt(values, "COLMAP.PLANESWEEPPATCHRADIUS", setup.m_colmap.m_planeSweepPatchRadius, 0, 16);
         ApplyPatchCostMethod(values, "COLMAP.PLANESWEEPPATCHCOSTMETHOD", setup.m_colmap.m_planeSweepPatchCostMethod);
         ApplyFloat(values, "COLMAP.PLANESWEEPADCENSUSWEIGHT", setup.m_colmap.m_planeSweepADCensusWeight, 0.0f, 1.0f);

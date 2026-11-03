@@ -5,6 +5,7 @@
 /.vs
 /bin/x64
 /build
+/out/build/pyramid-tests/
 /Output
 
 

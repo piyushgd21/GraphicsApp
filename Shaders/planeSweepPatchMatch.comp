@@ -1,0 +1,6 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_control_flow_attributes : require
+// The shared entry point also performs the pyramid initialization dispatches.
+#define GRAPHICSAPP_PLANE_SWEEP_SLANTED 1
+#include "planeSweepPyramid.glsl"

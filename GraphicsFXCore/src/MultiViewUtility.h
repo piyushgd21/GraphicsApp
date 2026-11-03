@@ -108,6 +108,9 @@ namespace graphicsFX
         std::size_t m_pointsAfterFusion{ 0 };
         std::size_t m_pointsAfterOutlierFilter{ 0 };
         std::size_t m_finalPointCount{ 0 };
+        uint64_t m_pyramidCandidates{ 0 };
+        uint64_t m_pyramidWidenedSearches{ 0 };
+        uint64_t m_pyramidGlobalRecoveries{ 0 };
         std::string m_depthOutputFolder;
         std::string m_pointCloudOutputPath;
     };
@@ -618,7 +621,7 @@ namespace graphicsFX
                         int patchRadius,
                         float alphaThreshold,
                         int minimumOpaqueSamples,
-                        float &rank);
+                        float &rank, bool pixelCenterCorrect = false);
 
                     //Converts accumulated patch measurements into a matching cost.
                     static bool ComputePatchCost(
@@ -650,7 +653,8 @@ namespace graphicsFX
                         float minimumOpaquePatchRatio,
                         PatchCostMethod patchCostMethod,
                         float adCensusWeight,
-                        float &cost
+                        float &cost,
+                        bool pixelCenterCorrect = false
                     );
 
                     //Debug one reference pixel across all candidate depth planes and write diagnostics.

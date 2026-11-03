@@ -145,6 +145,12 @@ namespace graphicsFX
         PatchCostMethodADCensus
     };
 
+    enum class PlaneSweepMatchingMode
+    {
+        PlaneSweep,
+        PatchMatchSlanted
+    };
+
     enum class PlaneSweepExecutionMode
     {
         CpuOnly,
@@ -184,10 +190,19 @@ namespace graphicsFX
         bool m_planeSweepEnabled{ true }; //Stores whether plane sweep reconstruction is enabled.
         bool m_planeSweepUseHomographyWarping{ false }; //Enables undistorted homography warping for plane sweep.
         PlaneSweepExecutionMode m_planeSweepExecutionMode{ PlaneSweepExecutionMode::CpuOnly }; //Stores the PlaneSweep depth-search execution mode.
+        PlaneSweepMatchingMode m_planeSweepMatchingMode{ PlaneSweepMatchingMode::PlaneSweep }; //Explicit algorithm choice; independent of CPU/GPU execution.
+        int m_planeSweepPatchMatchIterations{ 3 }; //Synchronous plane propagation/refinement passes.
+        bool m_planeSweepPatchMatchTiltEnabled{ true }; //Allows surface tilt; false is the weighted front-facing control.
+        float m_planeSweepPatchMatchColorSigma{ 0.15f }; //Support color scale, using RGB L1 distance in [0,3].
+        float m_planeSweepPatchMatchSpatialSigma{ 2.0f }; //Support distance scale in matching-level pixels.
         int m_planeSweepReferenceStep{ 10 }; //Stores the plane sweep reference camera sampling interval.
         int m_planeSweepSourceCount{ 4 }; //Stores number of source cameras used per reference camera.
         int m_planeSweepPlaneCount{ 96 }; //Stores number of swept inverse-depth planes.
         float m_planeSweepImageScale{ 0.25f }; //Stores the image scale used for plane sweep.
+        bool m_planeSweepCoarseToFineEnabled{ false }; //Uses a real image pyramid and local inverse-depth search.
+        int m_planeSweepPyramidLevels{ 3 }; //Coarse-to-fine matching levels, ending at imageScale.
+        int m_planeSweepLocalSamples{ 9 }; //Odd candidate count, including the parent estimate.
+        bool m_planeSweepSavePyramidDepth{ false }; //Saves intermediate level depths for inspection.
         int m_planeSweepPatchRadius{ 1 }; //Stores the matching patch radius in pixels.
         PatchCostMethod m_planeSweepPatchCostMethod{ PatchCostMethod::PatchCostMethodMeanAbsoluteDifference }; //Selects the patch matching method.
         float m_planeSweepADCensusWeight{ 0.5f }; //Sets the Census weight in [0, 1] for AD-Census.

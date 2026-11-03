@@ -23,6 +23,10 @@ add_library(GraphicsFXCore STATIC
     GraphicsFXCore/src/GaussianSplatUtility.h
     GraphicsFXCore/src/GraphicsUtility.cpp
     GraphicsFXCore/src/PlaneSweepGpu.cpp
+    GraphicsFXCore/src/PlaneSweepPyramid.cpp
+    GraphicsFXCore/src/PlaneSweepPyramidGpu.cpp
+    GraphicsFXCore/src/PlaneSweepPyramidCpu.cpp
+    GraphicsFXCore/src/PlaneSweepSlanted.cpp
     GraphicsFXCore/src/GraphicsUtility.h
     GraphicsFXCore/src/global.h
     GraphicsFXCore/src/InputUtility.cpp
@@ -102,7 +106,39 @@ add_custom_command(TARGET GraphicsApp00 POST_BUILD
 )
 
 include(CTest)
+# Shared shader target also tracks the included matching helpers.
+if(Vulkan_GLSLC_EXECUTABLE)
+    add_custom_target(PlaneSweepShaders
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:GraphicsApp00>/shaders"
+        COMMAND "${Vulkan_GLSLC_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/planeSweepDepthMapSmokeTest.comp"
+            -o "$<TARGET_FILE_DIR:GraphicsApp00>/shaders/planeSweepDepthMapSmokeTest.comp.spv"
+        COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -DGRAPHICSAPP_PLANE_SWEEP_FP64=1 "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/planeSweepDepthMapSmokeTest.comp"
+            -o "$<TARGET_FILE_DIR:GraphicsApp00>/shaders/planeSweepDepthMapFp64.comp.spv"
+        COMMAND "${Vulkan_GLSLC_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/planeSweepPyramid.comp"
+            -o "$<TARGET_FILE_DIR:GraphicsApp00>/shaders/planeSweepPyramid.comp.spv"
+        COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -DGRAPHICSAPP_PLANE_SWEEP_FP64=1 "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/planeSweepPyramid.comp"
+            -o "$<TARGET_FILE_DIR:GraphicsApp00>/shaders/planeSweepPyramidFp64.comp.spv"
+        COMMAND "${Vulkan_GLSLC_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/planeSweepPatchMatch.comp"
+            -o "$<TARGET_FILE_DIR:GraphicsApp00>/shaders/planeSweepPatchMatch.comp.spv"
+        COMMAND "${Vulkan_GLSLC_EXECUTABLE}" -DGRAPHICSAPP_PLANE_SWEEP_FP64=1 "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/planeSweepPatchMatch.comp"
+            -o "$<TARGET_FILE_DIR:GraphicsApp00>/shaders/planeSweepPatchMatchFp64.comp.spv"
+        DEPENDS Shaders/planeSweepDepthMapSmokeTest.comp Shaders/planeSweepPyramid.comp Shaders/planeSweepMatching.glsl
+            Shaders/planeSweepPyramid.glsl Shaders/planeSweepPatchMatch.comp Shaders/planeSweepSlanted.glsl Shaders/planeSweepSlanted.inl
+        COMMENT "Compiling plane sweep shaders"
+        VERBATIM)
+    add_dependencies(GraphicsApp00 PlaneSweepShaders)
+endif()
 if(BUILD_TESTING)
+    add_executable(PlaneSweepTiltBenchmark Tests/PlaneSweepTiltBenchmark.cpp)
+    target_link_libraries(PlaneSweepTiltBenchmark PRIVATE GraphicsFXCore)
+    if(Vulkan_GLSLC_EXECUTABLE)
+        add_dependencies(PlaneSweepTiltBenchmark PlaneSweepShaders)
+    endif()
+    add_executable(PlaneSweepSlantedTests Tests/PlaneSweepSlantedTests.cpp)
+    target_link_libraries(PlaneSweepSlantedTests PRIVATE GraphicsFXCore)
+    add_test(NAME PlaneSweepSlantedCpu COMMAND PlaneSweepSlantedTests)
+    add_executable(PlaneSweepPyramidTests Tests/PlaneSweepPyramidTests.cpp)
+    target_link_libraries(PlaneSweepPyramidTests PRIVATE GraphicsFXCore)
     add_executable(PlaneSweepPatchCostTests
         Tests/PlaneSweepPatchCostTests.cpp
     )
@@ -117,22 +153,11 @@ if(BUILD_TESTING)
     )
 
     if(Vulkan_GLSLC_EXECUTABLE)
-        add_custom_target(PlaneSweepPatchCostShader
-            COMMAND ${CMAKE_COMMAND} -E make_directory
-                "$<TARGET_FILE_DIR:PlaneSweepPatchCostTests>/shaders"
-            COMMAND "${Vulkan_GLSLC_EXECUTABLE}"
-                "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/planeSweepDepthMapSmokeTest.comp"
-                -o "$<TARGET_FILE_DIR:PlaneSweepPatchCostTests>/shaders/planeSweepDepthMapSmokeTest.comp.spv"
-            COMMAND "${Vulkan_GLSLC_EXECUTABLE}"
-                -DGRAPHICSAPP_PLANE_SWEEP_FP64=1
-                "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/planeSweepDepthMapSmokeTest.comp"
-                -o "$<TARGET_FILE_DIR:PlaneSweepPatchCostTests>/shaders/planeSweepDepthMapFp64.comp.spv"
-            DEPENDS
-                "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/planeSweepDepthMapSmokeTest.comp"
-            COMMENT "Compiling plane sweep shader for GPU regression tests"
-            VERBATIM
-        )
-        add_dependencies(PlaneSweepPatchCostTests PlaneSweepPatchCostShader)
+        add_dependencies(PlaneSweepSlantedTests PlaneSweepShaders)
+        add_test(NAME PlaneSweepSlantedGpu COMMAND PlaneSweepSlantedTests --gpu)
+        add_dependencies(PlaneSweepPatchCostTests PlaneSweepShaders)
+        add_dependencies(PlaneSweepPyramidTests PlaneSweepShaders)
+        add_test(NAME PlaneSweepPyramidGpu COMMAND PlaneSweepPyramidTests)
 
         add_test(
             NAME PlaneSweepGpuPatchCosts

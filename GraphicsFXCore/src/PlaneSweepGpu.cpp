@@ -2157,6 +2157,16 @@ void PlaneSweepGpu::Clean(void)
 		return;
 	}
 
+    for (int i = 0; i < 4; ++i)
+    {
+        if (m_pyramidPipelines[i]) vkDestroyPipeline(m_device, m_pyramidPipelines[i], nullptr);
+        if (m_pyramidPipelineLayouts[i]) vkDestroyPipelineLayout(m_device, m_pyramidPipelineLayouts[i], nullptr);
+        if (m_pyramidSetLayouts[i]) vkDestroyDescriptorSetLayout(m_device, m_pyramidSetLayouts[i], nullptr);
+        m_pyramidPipelines[i] = VK_NULL_HANDLE;
+        m_pyramidPipelineLayouts[i] = VK_NULL_HANDLE;
+        m_pyramidSetLayouts[i] = VK_NULL_HANDLE;
+    }
+
 	if (m_computePipeline != VK_NULL_HANDLE)
 	{
 		vkDestroyPipeline(m_device, m_computePipeline, nullptr);
