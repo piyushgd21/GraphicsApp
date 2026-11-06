@@ -2312,6 +2312,9 @@ namespace graphicsFX
         context.m_wireframeLineWidth = m_programSetup.m_graphics.m_wireframeLineWidth;
         context.m_maximumAnisotropy = m_graphicsUtility.MaximumAnisotropy();
         context.m_sampleCount = m_sceneSampleCount;
+        context.m_colorAttachmentIsSrgb = m_swapChainImageFormat == VK_FORMAT_B8G8R8A8_SRGB ||
+            m_swapChainImageFormat == VK_FORMAT_R8G8B8A8_SRGB ||
+            m_swapChainImageFormat == VK_FORMAT_A8B8G8R8_SRGB_PACK32;
         return context;
     }
 }

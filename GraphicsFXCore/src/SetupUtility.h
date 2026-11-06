@@ -217,7 +217,8 @@ namespace graphicsFX
         bool m_planeSweepCrossViewConsistencyEnabled{ true }; //Stores whether depth maps validate each other.
         int m_planeSweepCrossViewCount{ 4 }; //Stores maximum comparison depth maps per point.
         int m_planeSweepCrossViewMinimumViews{ 2 }; //Stores minimum agreeing comparison depth maps.
-        float m_planeSweepCrossViewRelativeDepthTolerance{ 0.05f }; //Stores maximum relative depth difference for agreement.
+        float m_planeSweepCrossViewRelativeDepthTolerance{ 0.01f }; //Stores maximum relative depth difference in both cameras.
+        float m_planeSweepCrossViewReprojectionTolerancePixels{ 1.0f }; //Stores maximum round-trip error in reference depth-map pixels.
         bool m_planeSweepPointFusionEnabled{ true }; //Stores whether nearby points are fused into voxels.
         float m_planeSweepFusionVoxelSize{ 0.02f }; //Stores voxel size used to fuse plane sweep points.
         int m_planeSweepFusionMinimumObservations{ 2 }; //Stores minimum observations required for a fused voxel.

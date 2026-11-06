@@ -696,11 +696,22 @@ namespace graphicsFX
         const VkShaderModule vertexShaderModule = CreateShaderModule(vertexShaderCode);
         const VkShaderModule fragmentShaderModule = CreateShaderModule(fragmentShaderCode);
 
+        // Vertex specialization constant 0 describes the output transfer function.
+        // Shaders that do not declare this constant ignore it.
+        const VkBool32 colorAttachmentIsSrgb = m_context.m_colorAttachmentIsSrgb ? VK_TRUE : VK_FALSE;
+        const VkSpecializationMapEntry colorAttachmentEntry{ 0U, 0U, sizeof(colorAttachmentIsSrgb) };
+        VkSpecializationInfo colorAttachmentSpecialization{};
+        colorAttachmentSpecialization.mapEntryCount = 1U;
+        colorAttachmentSpecialization.pMapEntries = &colorAttachmentEntry;
+        colorAttachmentSpecialization.dataSize = sizeof(colorAttachmentIsSrgb);
+        colorAttachmentSpecialization.pData = &colorAttachmentIsSrgb;
+
         VkPipelineShaderStageCreateInfo vertexShaderStageInfo{};
         vertexShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         vertexShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
         vertexShaderStageInfo.module = vertexShaderModule;
         vertexShaderStageInfo.pName = "main";
+        vertexShaderStageInfo.pSpecializationInfo = &colorAttachmentSpecialization;
 
         VkPipelineShaderStageCreateInfo fragmentShaderStageInfo{};
         fragmentShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;

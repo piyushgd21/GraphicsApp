@@ -3380,7 +3380,7 @@ namespace graphicsFX
         )
         {
             // Note: metrics timing is collected by the caller for cross-view step if requested.
-            if (!setup.m_planeSweepCrossViewConsistencyEnabled || depthMaps.size() < 2U || pointCandidates.empty())
+            if (!setup.m_planeSweepCrossViewConsistencyEnabled || pointCandidates.empty())
             {
                 return;
             }
@@ -3388,7 +3388,36 @@ namespace graphicsFX
             const std::size_t comparisonCount = static_cast<std::size_t>(std::max(1, setup.m_planeSweepCrossViewCount));
             const int minimumViews = std::max(1, setup.m_planeSweepCrossViewMinimumViews);
             const float depthTolerance = std::max(0.0f, setup.m_planeSweepCrossViewRelativeDepthTolerance);
+            const float pixelTolerance = std::max(0.0f, setup.m_planeSweepCrossViewReprojectionTolerancePixels);
+            const float pixelToleranceSquared = pixelTolerance * pixelTolerance;
             const int sampleRadius = std::max(1, setup.m_planeSweepPointStep);
+            const auto validDepthMap = [](const PlaneSweepDepthMap &map)
+            {
+                return map.m_width > 0U && map.m_height > 0U && map.m_imageWidth > 0U && map.m_imageHeight > 0U &&
+                    map.m_intrinsic.m_fx > 0.0 && map.m_intrinsic.m_fy > 0.0 &&
+                    std::isfinite(map.m_intrinsic.m_fx) && std::isfinite(map.m_intrinsic.m_fy) &&
+                    map.m_depthValues.size() == static_cast<std::size_t>(map.m_width) * map.m_height;
+            };
+
+            // Camera ranking is independent of the point. Reuse it across all points in each reference.
+            std::vector<std::vector<PlaneSweepSourceCandidate>> comparisonCandidatesByReference(depthMaps.size());
+            for (std::size_t referenceIndex = 0U; referenceIndex < depthMaps.size(); ++referenceIndex)
+            {
+                const PlaneSweepDepthMap &reference = depthMaps[referenceIndex];
+                auto &candidates = comparisonCandidatesByReference[referenceIndex];
+                for (std::size_t index = 0U; index < depthMaps.size(); ++index)
+                {
+                    if (index == referenceIndex || !validDepthMap(depthMaps[index])) continue;
+                    const PlaneSweepDepthMap &comparison = depthMaps[index];
+                    const float distance = length(comparison.m_camera.m_position - reference.m_camera.m_position);
+                    const float alignment = std::max(0.0f, dot(reference.m_camera.m_forward, comparison.m_camera.m_forward));
+                    candidates.push_back(PlaneSweepSourceCandidate{ index, 0U, distance / (0.25f + alignment) });
+                }
+                std::sort(candidates.begin(), candidates.end(), [](const PlaneSweepSourceCandidate &a, const PlaneSweepSourceCandidate &b)
+                {
+                    return a.m_score < b.m_score;
+                });
+            }
             std::vector<PlaneSweepPointCandidate> consistentCandidates;
             consistentCandidates.reserve(pointCandidates.size());
 
@@ -3401,28 +3430,17 @@ namespace graphicsFX
                 }
 
                 const PlaneSweepDepthMap &referenceDepthMap = depthMaps[pointCandidate.m_depthMapIndex];
-                std::vector<PlaneSweepSourceCandidate> comparisonCandidates;
-                comparisonCandidates.reserve(depthMaps.size() - 1U);
-                for (std::size_t depthMapIndex = 0U; depthMapIndex < depthMaps.size(); ++depthMapIndex)
+                float referenceX = 0.0f, referenceY = 0.0f, referenceDepth = 0.0f;
+                if (!validDepthMap(referenceDepthMap) ||
+                    !ProjectPoint(referenceDepthMap.m_camera, referenceDepthMap.m_intrinsic, pointCandidate.m_position,
+                        referenceX, referenceY, referenceDepth))
                 {
-                    if (depthMapIndex == pointCandidate.m_depthMapIndex)
-                    {
-                        continue;
-                    }
-
-                    const PlaneSweepDepthMap &comparisonDepthMap = depthMaps[depthMapIndex];
-                    const Float3 offset = comparisonDepthMap.m_camera.m_position - referenceDepthMap.m_camera.m_position;
-                    const float distance = std::sqrt((offset.x * offset.x) + (offset.y * offset.y) + (offset.z * offset.z));
-                    const float viewAlignment = std::max(0.0f, dot(referenceDepthMap.m_camera.m_forward, comparisonDepthMap.m_camera.m_forward));
-                    comparisonCandidates.push_back(PlaneSweepSourceCandidate{ depthMapIndex, 0U, distance / (0.25f + viewAlignment) });
+                    ++result.m_pointsRejectedCrossView;
+                    continue;
                 }
-
-                std::sort(comparisonCandidates.begin(), comparisonCandidates.end(), [](const PlaneSweepSourceCandidate &a, const PlaneSweepSourceCandidate &b)
-                {
-                    return a.m_score < b.m_score;
-                });
-
-                int validViews = 0;
+                const float referencePixelScaleX = float(referenceDepthMap.m_width) / float(referenceDepthMap.m_imageWidth);
+                const float referencePixelScaleY = float(referenceDepthMap.m_height) / float(referenceDepthMap.m_imageHeight);
+                const auto &comparisonCandidates = comparisonCandidatesByReference[pointCandidate.m_depthMapIndex];
                 int agreeingViews = 0;
                 const std::size_t candidateCount = std::min(comparisonCount, comparisonCandidates.size());
                 for (std::size_t candidateIndex = 0U; candidateIndex < candidateCount; ++candidateIndex)
@@ -3441,8 +3459,8 @@ namespace graphicsFX
 
                     const int centerX = setup.m_planeSweepCoarseToFineEnabled ? int(std::lround((x + 0.5f) * float(comparisonDepthMap.m_width) / float(comparisonDepthMap.m_imageWidth) - 0.5f)) : static_cast<int>(std::lround((x / static_cast<float>(std::max(1U, comparisonDepthMap.m_imageWidth))) * comparisonDepthMap.m_width));
                     const int centerY = setup.m_planeSweepCoarseToFineEnabled ? int(std::lround((y + 0.5f) * float(comparisonDepthMap.m_height) / float(comparisonDepthMap.m_imageHeight) - 0.5f)) : static_cast<int>(std::lround((y / static_cast<float>(std::max(1U, comparisonDepthMap.m_imageHeight))) * comparisonDepthMap.m_height));
-                    float smallestRelativeDifference = std::numeric_limits<float>::max();
-                    for (int sampleY = centerY - sampleRadius; sampleY <= centerY + sampleRadius; ++sampleY)
+                    bool agrees = false;
+                    for (int sampleY = centerY - sampleRadius; sampleY <= centerY + sampleRadius && !agrees; ++sampleY)
                     {
                         for (int sampleX = centerX - sampleRadius; sampleX <= centerX + sampleRadius; ++sampleX)
                         {
@@ -3452,27 +3470,42 @@ namespace graphicsFX
                             }
 
                             const float comparisonDepth = comparisonDepthMap.m_depthValues[(static_cast<std::size_t>(sampleY) * comparisonDepthMap.m_width) + static_cast<uint32_t>(sampleX)];
-                            if (comparisonDepth <= 0.0f)
+                            if (!std::isfinite(comparisonDepth) || comparisonDepth <= 0.0f)
                             {
                                 continue;
                             }
 
-                            const float relativeDifference = std::fabs(projectedDepth - comparisonDepth) / std::max(projectedDepth, comparisonDepth);
-                            smallestRelativeDifference = std::min(smallestRelativeDifference, relativeDifference);
+                            if (std::fabs(projectedDepth - comparisonDepth) / projectedDepth > depthTolerance) continue;
+
+                            // Reconstruct the supporting sample at exactly the pixel used to create its depth.
+                            const float sampleImageX = setup.m_planeSweepCoarseToFineEnabled
+                                ? (float(sampleX) + 0.5f) * float(comparisonDepthMap.m_imageWidth) / float(comparisonDepthMap.m_width) - 0.5f
+                                : float((static_cast<std::size_t>(sampleX) * comparisonDepthMap.m_imageWidth) / comparisonDepthMap.m_width);
+                            const float sampleImageY = setup.m_planeSweepCoarseToFineEnabled
+                                ? (float(sampleY) + 0.5f) * float(comparisonDepthMap.m_imageHeight) / float(comparisonDepthMap.m_height) - 0.5f
+                                : float((static_cast<std::size_t>(sampleY) * comparisonDepthMap.m_imageHeight) / comparisonDepthMap.m_height);
+                            const Float3 supportingPoint = UnprojectPixel(comparisonDepthMap.m_camera, comparisonDepthMap.m_intrinsic,
+                                sampleImageX, sampleImageY, comparisonDepth);
+                            float returnedX = 0.0f, returnedY = 0.0f, returnedDepth = 0.0f;
+                            if (!ProjectPoint(referenceDepthMap.m_camera, referenceDepthMap.m_intrinsic, supportingPoint,
+                                returnedX, returnedY, returnedDepth)) continue;
+                            if (std::fabs(returnedDepth - referenceDepth) / referenceDepth > depthTolerance) continue;
+
+                            const float errorX = (returnedX - referenceX) * referencePixelScaleX;
+                            const float errorY = (returnedY - referenceY) * referencePixelScaleY;
+                            if (errorX * errorX + errorY * errorY <= pixelToleranceSquared)
+                            {
+                                agrees = true;
+                                break;
+                            }
                         }
                     }
 
-                    if (std::isfinite(smallestRelativeDifference))
-                    {
-                        ++validViews;
-                        if (smallestRelativeDifference <= depthTolerance)
-                        {
-                            ++agreeingViews;
-                        }
-                    }
+                    if (agrees) ++agreeingViews;
+                    if (agreeingViews >= minimumViews) break;
                 }
 
-                if (validViews >= minimumViews && agreeingViews >= minimumViews)
+                if (agreeingViews >= minimumViews)
                 {
                     consistentCandidates.push_back(pointCandidate);
                 }
@@ -3482,6 +3515,10 @@ namespace graphicsFX
                 }
             }
 
+            UIUtility::Print("Cross-view round-trip consistency: kept " + std::to_string(consistentCandidates.size()) +
+                " / " + std::to_string(pointCandidates.size()) + " candidates; depth tolerance=" + std::to_string(depthTolerance) +
+                ", pixel tolerance=" + std::to_string(pixelTolerance) + " depth-map pixels, minimum views=" +
+                std::to_string(minimumViews) + ".\n");
             pointCandidates = std::move(consistentCandidates);
         }
 

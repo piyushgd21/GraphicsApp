@@ -827,6 +827,7 @@ namespace graphicsFX
         ApplyInt(values, "COLMAP.PLANESWEEPCROSSVIEWCOUNT", setup.m_colmap.m_planeSweepCrossViewCount, 1, 128);
         ApplyInt(values, "COLMAP.PLANESWEEPCROSSVIEWMINIMUMVIEWS", setup.m_colmap.m_planeSweepCrossViewMinimumViews, 1, 128);
         ApplyFloat(values, "COLMAP.PLANESWEEPCROSSVIEWRELATIVEDEPTHTOLERANCE", setup.m_colmap.m_planeSweepCrossViewRelativeDepthTolerance, 0.0f, 10.0f);
+        ApplyFloat(values, "COLMAP.PLANESWEEPCROSSVIEWREPROJECTIONTOLERANCEPIXELS", setup.m_colmap.m_planeSweepCrossViewReprojectionTolerancePixels, 0.0f, 1000.0f);
         ApplyBool(values, "COLMAP.PLANESWEEPPOINTFUSIONENABLED", setup.m_colmap.m_planeSweepPointFusionEnabled);
         ApplyFloat(values, "COLMAP.PLANESWEEPFUSIONVOXELSIZE", setup.m_colmap.m_planeSweepFusionVoxelSize, 0.000001f, 1000000.0f);
         ApplyInt(values, "COLMAP.PLANESWEEPFUSIONMINIMUMOBSERVATIONS", setup.m_colmap.m_planeSweepFusionMinimumObservations, 1, 1000000);

@@ -137,6 +137,10 @@ if(BUILD_TESTING)
     add_executable(PlaneSweepSlantedTests Tests/PlaneSweepSlantedTests.cpp)
     target_link_libraries(PlaneSweepSlantedTests PRIVATE GraphicsFXCore)
     add_test(NAME PlaneSweepSlantedCpu COMMAND PlaneSweepSlantedTests)
+    add_executable(PlaneSweepConsistencyTests Tests/PlaneSweepConsistencyTests.cpp)
+    target_link_libraries(PlaneSweepConsistencyTests PRIVATE GraphicsFXCore)
+    add_test(NAME PlaneSweepConsistency COMMAND PlaneSweepConsistencyTests
+        "${CMAKE_CURRENT_BINARY_DIR}/Testing/Consistency")
     add_executable(PlaneSweepPyramidTests Tests/PlaneSweepPyramidTests.cpp)
     target_link_libraries(PlaneSweepPyramidTests PRIVATE GraphicsFXCore)
     add_executable(PlaneSweepPatchCostTests

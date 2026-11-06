@@ -49,6 +49,7 @@ namespace graphicsFX
         float m_wireframeLineWidth{ 2.0f }; //Stores the requested wireframe line width.
         float m_maximumAnisotropy{ 1.0f }; //Stores the maximum sampler anisotropy.
         VkSampleCountFlagBits m_sampleCount{ VK_SAMPLE_COUNT_1_BIT }; //Stores the scene pipeline sample count.
+        bool m_colorAttachmentIsSrgb{ false }; //Stores whether the render target encodes linear RGB as sRGB.
         bool m_shaderOverrideEnabled{ false }; //Stores whether capture shaders override object shaders.
         std::string m_vertexShaderOverride; //Stores the non-instanced vertex shader override.
         std::string m_instancedVertexShaderOverride; //Stores the instanced vertex shader override.
