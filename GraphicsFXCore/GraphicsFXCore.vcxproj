@@ -70,7 +70,7 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(VULKAN_SDK)\Include;$(ProjectDir)..\packages\OpenXR.Headers.1.0.10.2\include;$(ProjectDir)src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(VULKAN_SDK)\Include;$(ProjectDir)..\packages\OpenXR.Headers.1.0.10.2\include;$(ProjectDir)src;$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <ConformanceMode>true</ConformanceMode>
     </ClCompile>
@@ -89,6 +89,8 @@
     <ClCompile Include="src\PlaneSweepPyramid.cpp" />
     <ClCompile Include="src\PlaneSweepPyramidCpu.cpp" />
     <ClCompile Include="src\PlaneSweepSlanted.cpp" />
+    <ClCompile Include="src\PlaneSweepColorSelection.cpp" />
+    <ClCompile Include="src\PlaneSweepCrossViewCorrection.cpp" />
     <ClCompile Include="src\PlaneSweepPyramidGpu.cpp" />
     <ClCompile Include="src\SceneObject.cpp" />
     <ClCompile Include="src\SetupUtility.cpp" />
@@ -103,6 +105,8 @@
     <ClInclude Include="include\PlaneSweepGpu.h" />
     <ClInclude Include="include\PlaneSweepGpuTypes.h" />
     <ClInclude Include="include\PlaneSweepPyramid.h" />
+    <ClInclude Include="include\PlaneSweepColorSelection.h" />
+    <ClInclude Include="include\PlaneSweepCrossViewCorrection.h" />
     <ClInclude Include="src\Camera.h" />
     <ClInclude Include="src\EngineCore.h" />
     <ClInclude Include="src\GaussianSplatStreamLoader.h" />

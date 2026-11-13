@@ -215,10 +215,13 @@ namespace graphicsFX
         bool m_planeSweepTextureRejectionEnabled{ true }; //Stores whether textureless reference patches are rejected.
         float m_planeSweepTextureMinimumStdDev{ 0.03f }; //Stores minimum grayscale patch standard deviation.
         bool m_planeSweepCrossViewConsistencyEnabled{ true }; //Stores whether depth maps validate each other.
+        bool m_planeSweepCrossViewCorrectionEnabled{ false }; //Optionally reconciles accepted depths using unchanged supporting maps.
         int m_planeSweepCrossViewCount{ 4 }; //Stores maximum comparison depth maps per point.
         int m_planeSweepCrossViewMinimumViews{ 2 }; //Stores minimum agreeing comparison depth maps.
         float m_planeSweepCrossViewRelativeDepthTolerance{ 0.01f }; //Stores maximum relative depth difference in both cameras.
         float m_planeSweepCrossViewReprojectionTolerancePixels{ 1.0f }; //Stores maximum round-trip error in reference depth-map pixels.
+        bool m_planeSweepBoundaryColorSelectionEnabled{ false }; //Optionally replaces boundary RGB using reliable interior observations.
+        int m_planeSweepBoundaryColorViewCount{ 4 }; //Limits color-only camera search independently of geometric validation.
         bool m_planeSweepPointFusionEnabled{ true }; //Stores whether nearby points are fused into voxels.
         float m_planeSweepFusionVoxelSize{ 0.02f }; //Stores voxel size used to fuse plane sweep points.
         int m_planeSweepFusionMinimumObservations{ 2 }; //Stores minimum observations required for a fused voxel.

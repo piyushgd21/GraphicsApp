@@ -83,7 +83,7 @@ namespace graphicsFX
         const SweepUtility::PlaneSweepImage &reference,
         const std::vector<SweepUtility::PlaneSweepImage> &sources, const ColmapSetup &setup)
     {
-        if (sources.empty() || setup.m_planeSweepPyramidLevels < 1 || setup.m_planeSweepPyramidLevels > 6 ||
+        if (sources.empty() || setup.m_planeSweepPyramidLevels < 1 || setup.m_planeSweepPyramidLevels > 12 ||
             setup.m_planeSweepImageScale <= 0 || setup.m_planeSweepImageScale > 1 ||
             setup.m_planeSweepLocalSamples < 3 || setup.m_planeSweepLocalSamples > 33 ||
             setup.m_planeSweepLocalSamples % 2 == 0)

@@ -807,7 +807,7 @@ namespace graphicsFX
         ApplyInt(values, "COLMAP.PLANESWEEPPLANECOUNT", setup.m_colmap.m_planeSweepPlaneCount, 2, 4096);
         ApplyFloat(values, "COLMAP.PLANESWEEPIMAGESCALE", setup.m_colmap.m_planeSweepImageScale, 0.01f, 1.0f);
         ApplyBool(values, "COLMAP.PLANESWEEPCOARSETOFINEENABLED", setup.m_colmap.m_planeSweepCoarseToFineEnabled);
-        ApplyInt(values, "COLMAP.PLANESWEEPPYRAMIDLEVELS", setup.m_colmap.m_planeSweepPyramidLevels, 1, 6);
+        ApplyInt(values, "COLMAP.PLANESWEEPPYRAMIDLEVELS", setup.m_colmap.m_planeSweepPyramidLevels, 1, 12);
         ApplyInt(values, "COLMAP.PLANESWEEPLOCALSAMPLES", setup.m_colmap.m_planeSweepLocalSamples, 3, 33);
         setup.m_colmap.m_planeSweepLocalSamples |= 1;
         ApplyBool(values, "COLMAP.PLANESWEEPSAVEPYRAMIDDEPTH", setup.m_colmap.m_planeSweepSavePyramidDepth);
@@ -824,10 +824,13 @@ namespace graphicsFX
         ApplyBool(values, "COLMAP.PLANESWEEPTEXTUREREJECTIONENABLED", setup.m_colmap.m_planeSweepTextureRejectionEnabled);
         ApplyFloat(values, "COLMAP.PLANESWEEPTEXTUREMINIMUMSTDDEV", setup.m_colmap.m_planeSweepTextureMinimumStdDev, 0.0f, 1.0f);
         ApplyBool(values, "COLMAP.PLANESWEEPCROSSVIEWCONSISTENCYENABLED", setup.m_colmap.m_planeSweepCrossViewConsistencyEnabled);
+        ApplyBool(values, "COLMAP.PLANESWEEPCROSSVIEWCORRECTIONENABLED", setup.m_colmap.m_planeSweepCrossViewCorrectionEnabled);
         ApplyInt(values, "COLMAP.PLANESWEEPCROSSVIEWCOUNT", setup.m_colmap.m_planeSweepCrossViewCount, 1, 128);
         ApplyInt(values, "COLMAP.PLANESWEEPCROSSVIEWMINIMUMVIEWS", setup.m_colmap.m_planeSweepCrossViewMinimumViews, 1, 128);
         ApplyFloat(values, "COLMAP.PLANESWEEPCROSSVIEWRELATIVEDEPTHTOLERANCE", setup.m_colmap.m_planeSweepCrossViewRelativeDepthTolerance, 0.0f, 10.0f);
         ApplyFloat(values, "COLMAP.PLANESWEEPCROSSVIEWREPROJECTIONTOLERANCEPIXELS", setup.m_colmap.m_planeSweepCrossViewReprojectionTolerancePixels, 0.0f, 1000.0f);
+        ApplyBool(values, "COLMAP.PLANESWEEPBOUNDARYCOLORSELECTIONENABLED", setup.m_colmap.m_planeSweepBoundaryColorSelectionEnabled);
+        ApplyInt(values, "COLMAP.PLANESWEEPBOUNDARYCOLORVIEWCOUNT", setup.m_colmap.m_planeSweepBoundaryColorViewCount, 1, 128);
         ApplyBool(values, "COLMAP.PLANESWEEPPOINTFUSIONENABLED", setup.m_colmap.m_planeSweepPointFusionEnabled);
         ApplyFloat(values, "COLMAP.PLANESWEEPFUSIONVOXELSIZE", setup.m_colmap.m_planeSweepFusionVoxelSize, 0.000001f, 1000000.0f);
         ApplyInt(values, "COLMAP.PLANESWEEPFUSIONMINIMUMOBSERVATIONS", setup.m_colmap.m_planeSweepFusionMinimumObservations, 1, 1000000);

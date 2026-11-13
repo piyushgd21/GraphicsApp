@@ -681,7 +681,7 @@ namespace graphicsFX
                         PlaneSweepExperimentMetrics *metricsPtr = nullptr
                     );
 
-                    //Rejects points unsupported by other reconstructed depth maps.
+                    //Rejects unsupported points, then optionally reconciles accepted depths with immutable maps.
                     static void ApplyCrossViewConsistency(
                         const ColmapSetup &setup,
                         const std::vector<PlaneSweepDepthMap> &depthMaps,

@@ -11,6 +11,8 @@
 #include "PlaneSweepGpu.h"
 #include "PlaneSweepGpuTypes.h"
 #include "PlaneSweepPyramid.h"
+#include "PlaneSweepColorSelection.h"
+#include "PlaneSweepCrossViewCorrection.h"
 
 #include "PathUtility.h"
 #include "StringUtility.h"
@@ -3520,6 +3522,28 @@ namespace graphicsFX
                 ", pixel tolerance=" + std::to_string(pixelTolerance) + " depth-map pixels, minimum views=" +
                 std::to_string(minimumViews) + ".\n");
             pointCandidates = std::move(consistentCandidates);
+            if (setup.m_planeSweepCrossViewCorrectionEnabled)
+            {
+                const auto corrected = CorrectPlaneSweepCrossViewDepths(setup, depthMaps, pointCandidates);
+                UIUtility::Print("Cross-view depth correction: corrected " + std::to_string(corrected.m_corrected) +
+                    " / " + std::to_string(corrected.m_examined) + ", insufficient support=" +
+                    std::to_string(corrected.m_insufficientSupport) + ", ambiguous=" + std::to_string(corrected.m_ambiguous) +
+                    ", unchanged=" + std::to_string(corrected.m_unchanged) + ", mean relative movement=" +
+                    std::to_string(corrected.MeanRelativeMovement()) + ", maximum=" +
+                    std::to_string(corrected.m_maxRelativeMovement) + ", mean agreement score before/after=" +
+                    std::to_string(corrected.MeanScoreBefore()) + "/" + std::to_string(corrected.MeanScoreAfter()) +
+                    ". Original maps and RGB are unchanged.\n");
+                UIUtility::Print("Surface refinement: supported=" + std::to_string(corrected.m_surfaceSupported) +
+                    ", regularized=" + std::to_string(corrected.m_regularized) + ", consensus only=" +
+                    std::to_string(corrected.m_consensusOnly) + ", missing neighborhood=" +
+                    std::to_string(corrected.m_surfaceMissing) + ", edge/crease guard=" +
+                    std::to_string(corrected.m_surfaceEdges) + ", rejected proposals=" +
+                    std::to_string(corrected.m_proposalsRejected) + ", mean joint objective before/after=" +
+                    std::to_string(corrected.MeanObjectiveBefore()) + "/" + std::to_string(corrected.MeanObjectiveAfter()) +
+                    ", mean relative surface residual before/after=" + std::to_string(corrected.MeanSurfaceErrorBefore()) +
+                    "/" + std::to_string(corrected.MeanSurfaceErrorAfter()) +
+                    ". Geometric score may rise slightly when surface coherence improves; view/depth/pixel limits still apply.\n");
+            }
         }
 
         //Fuses and filters plane sweep point candidates.
@@ -4321,7 +4345,8 @@ namespace graphicsFX
                     if (MultiViewPlaneSweepUtility::SaveDepthOutput(setup, referenceImage.m_camera,
                         pyramidMap.m_depthValues, pyramidMap.m_width, pyramidMap.m_height)) ++result.m_depthFilesSaved;
                     ++result.m_referenceImagesProcessed;
-                    if (setup.m_planeSweepCrossViewConsistencyEnabled) depthMaps.push_back(std::move(pyramidMap));
+                    if (setup.m_planeSweepCrossViewConsistencyEnabled || setup.m_planeSweepBoundaryColorSelectionEnabled)
+                        depthMaps.push_back(std::move(pyramidMap));
                     continue;
                 }
 
@@ -4503,7 +4528,7 @@ namespace graphicsFX
                     }
                 }
 
-                if (setup.m_planeSweepCrossViewConsistencyEnabled)
+                if (setup.m_planeSweepCrossViewConsistencyEnabled || setup.m_planeSweepBoundaryColorSelectionEnabled)
                 {
                     depthMaps.push_back(std::move(depthMap));
                 }
@@ -4590,6 +4615,23 @@ namespace graphicsFX
                 }
             }
 
+            const auto selectBoundaryColors = [&]()
+            {
+                if (!setup.m_planeSweepBoundaryColorSelectionEnabled) return;
+                const auto stats = SelectPlaneSweepBoundaryColors(setup, depthMaps, pointCandidates,
+                    [&](std::size_t mapIndex, MultiViewPlaneSweepUtility::PlaneSweepImage &image)
+                    {
+                        if (mapIndex >= depthMaps.size()) return false;
+                        const auto camera = cameraIndexLookup.find(depthMaps[mapIndex].m_camera.m_imageId);
+                        return camera != cameraIndexLookup.end() && MultiViewPlaneSweepUtility::LoadPlaneSweepImage(
+                            colmapData, setup, imageFiles, maskFiles, camera->second, image);
+                    });
+                UIUtility::Print("Boundary color selection: recolored " + std::to_string(stats.m_recoloredPoints) +
+                    " / " + std::to_string(stats.m_boundaryPoints) + " boundary points; insufficient interior observations=" +
+                    std::to_string(stats.m_insufficientObservations) + ", unavailable images=" +
+                    std::to_string(stats.m_imagesUnavailable) + ", color camera limit=" +
+                    std::to_string(setup.m_planeSweepBoundaryColorViewCount) + ". RGB only; geometry and alpha unchanged.\n");
+            };
             if (metricsPtr)
             {
                 const auto cvStart = std::chrono::steady_clock::now();
@@ -4598,6 +4640,7 @@ namespace graphicsFX
                 metricsPtr->m_crossViewMs += std::chrono::duration<double, std::milli>(cvEnd - cvStart).count();
 
                 const auto bfStart = std::chrono::steady_clock::now();
+                selectBoundaryColors();
                 MultiViewPlaneSweepUtility::BuildFilteredPoints(setup, pointCandidates, result);
                 const auto bfEnd = std::chrono::steady_clock::now();
                 metricsPtr->m_filteringMs += std::chrono::duration<double, std::milli>(bfEnd - bfStart).count();
@@ -4605,6 +4648,7 @@ namespace graphicsFX
             else
             {
                 MultiViewPlaneSweepUtility::ApplyCrossViewConsistency(setup, depthMaps, pointCandidates, result);
+                selectBoundaryColors();
                 MultiViewPlaneSweepUtility::BuildFilteredPoints(setup, pointCandidates, result);
             }
 

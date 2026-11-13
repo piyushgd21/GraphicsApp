@@ -22,6 +22,10 @@ add_library(GraphicsFXCore STATIC
     GraphicsFXCore/src/GaussianSplatUtility.cpp
     GraphicsFXCore/src/GaussianSplatUtility.h
     GraphicsFXCore/src/GraphicsUtility.cpp
+    GraphicsFXCore/src/PlaneSweepColorSelection.cpp
+    GraphicsFXCore/include/PlaneSweepColorSelection.h
+    GraphicsFXCore/src/PlaneSweepCrossViewCorrection.cpp
+    GraphicsFXCore/include/PlaneSweepCrossViewCorrection.h
     GraphicsFXCore/src/PlaneSweepGpu.cpp
     GraphicsFXCore/src/PlaneSweepPyramid.cpp
     GraphicsFXCore/src/PlaneSweepPyramidGpu.cpp
@@ -138,9 +142,17 @@ if(BUILD_TESTING)
     target_link_libraries(PlaneSweepSlantedTests PRIVATE GraphicsFXCore)
     add_test(NAME PlaneSweepSlantedCpu COMMAND PlaneSweepSlantedTests)
     add_executable(PlaneSweepConsistencyTests Tests/PlaneSweepConsistencyTests.cpp)
+    add_executable(PlaneSweepCrossViewCorrectionTests Tests/PlaneSweepCrossViewCorrectionTests.cpp)
+    add_executable(PlaneSweepCrossViewCompare Tests/PlaneSweepCrossViewCompare.cpp)
+    target_link_libraries(PlaneSweepCrossViewCompare PRIVATE GraphicsFXCore)
+    target_link_libraries(PlaneSweepCrossViewCorrectionTests PRIVATE GraphicsFXCore)
+    add_test(NAME PlaneSweepCrossViewCorrection COMMAND PlaneSweepCrossViewCorrectionTests)
     target_link_libraries(PlaneSweepConsistencyTests PRIVATE GraphicsFXCore)
     add_test(NAME PlaneSweepConsistency COMMAND PlaneSweepConsistencyTests
         "${CMAKE_CURRENT_BINARY_DIR}/Testing/Consistency")
+    add_executable(PlaneSweepColorSelectionTests Tests/PlaneSweepColorSelectionTests.cpp)
+    target_link_libraries(PlaneSweepColorSelectionTests PRIVATE GraphicsFXCore)
+    add_test(NAME PlaneSweepColorSelection COMMAND PlaneSweepColorSelectionTests)
     add_executable(PlaneSweepPyramidTests Tests/PlaneSweepPyramidTests.cpp)
     target_link_libraries(PlaneSweepPyramidTests PRIVATE GraphicsFXCore)
     add_executable(PlaneSweepPatchCostTests

@@ -381,7 +381,14 @@ namespace graphicsFX
                     if (diagnostics && l + 1 == count)
                     {
                         diagnostics->m_costs.reserve(entries);
-                        for (const auto &pixel : state) diagnostics->m_costs.push_back(pixel[1]);
+                        diagnostics->m_confidenceGaps.reserve(entries);
+                        diagnostics->m_status.reserve(entries);
+                        for (size_t i = 0; i < entries; ++i)
+                        {
+                            diagnostics->m_costs.push_back(state[i][1]);
+                            diagnostics->m_confidenceGaps.push_back(state[i][2]);
+                            diagnostics->m_status.push_back(counters[i][3]);
+                        }
                         if (planeReadback.handle)
                         {
                             diagnostics->m_planes.resize(entries);

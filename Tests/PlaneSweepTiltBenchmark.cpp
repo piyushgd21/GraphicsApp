@@ -39,12 +39,16 @@ int main(int argc, char **argv)
 {
     try
     {
-        if (argc < 3) throw std::runtime_error("Usage: PlaneSweepTiltBenchmark setup.ini output_folder [maximum_reference_views] [modes]");
+        if (argc < 3) throw std::runtime_error("Usage: PlaneSweepTiltBenchmark setup.ini output_folder [maximum_reference_views] [modes|confidence]");
         const bool compareModes = argc > 4 && std::string(argv[4]) == "modes";
-        if (argc > 4 && !compareModes) throw std::runtime_error("Unknown comparison: expected modes.");
+        const bool compareConfidence = argc > 4 && std::string(argv[4]) == "confidence";
+        if (argc > 4 && !compareModes && !compareConfidence) throw std::runtime_error("Unknown comparison: expected modes or confidence.");
         struct Variant { const char *name; PlaneSweepMatchingMode mode; bool tilt; };
         std::vector<Variant> variants;
-        if (compareModes)
+        if (compareConfidence)
+            variants = { { "confidence_on", PlaneSweepMatchingMode::PatchMatchSlanted, true },
+                { "confidence_off", PlaneSweepMatchingMode::PatchMatchSlanted, true } };
+        else if (compareModes)
             variants = { { "planesweep", PlaneSweepMatchingMode::PlaneSweep, false },
                 { "slanted_front", PlaneSweepMatchingMode::PatchMatchSlanted, false }, { "slanted", PlaneSweepMatchingMode::PatchMatchSlanted, true } };
         else
@@ -54,7 +58,7 @@ int main(int argc, char **argv)
         for (const auto &variant : variants) std::filesystem::create_directories(output / variant.name);
         std::filesystem::copy_file(argv[1], output / "source_setup.ini", std::filesystem::copy_options::overwrite_existing);
         auto setup = LoadProgramSetup(argv[1]).m_colmap;
-        if (std::filesystem::path(setup.m_cameraIntrinsicFile).parent_path().filename() != "scan9")
+        if (!compareConfidence && std::filesystem::path(setup.m_cameraIntrinsicFile).parent_path().filename() != "scan9")
             throw std::runtime_error("Expected the scan9 paths under #house data in setup.ini.");
         setup.m_planeSweepMatchingMode = PlaneSweepMatchingMode::PatchMatchSlanted;
         setup.m_planeSweepExecutionMode = PlaneSweepExecutionMode::Gpu;
@@ -84,8 +88,8 @@ int main(int argc, char **argv)
             << "\niterations=" << setup.m_planeSweepPatchMatchIterations << "\ncost_threshold=" << setup.m_planeSweepCostThreshold
             << "\nconfidence_enabled=" << setup.m_planeSweepConfidenceEnabled << "\nconfidence_gap=" << setup.m_planeSweepConfidenceMinimumDifference
             << "\ntexture_rejection_enabled=" << setup.m_planeSweepTextureRejectionEnabled << "\ntexture_stddev=" << setup.m_planeSweepTextureMinimumStdDev
-            << "\nraw_depths_before_crossview_filter=true\ncomparison=" << (compareModes ? "matching_modes" : "tilt_only")
-            << "\nonly_varied_parameter=" << (compareModes ? "PlaneSweepMatchingMode_and_PlaneSweepPatchMatchTiltEnabled" : "PlaneSweepPatchMatchTiltEnabled") << '\n';
+            << "\nraw_depths_before_crossview_filter=true\ncomparison=" << (compareConfidence ? "confidence" : compareModes ? "matching_modes" : "tilt_only")
+            << "\nonly_varied_parameter=" << (compareConfidence ? "PlaneSweepConfidenceEnabled" : compareModes ? "PlaneSweepMatchingMode_and_PlaneSweepPatchMatchTiltEnabled" : "PlaneSweepPatchMatchTiltEnabled") << '\n';
         PlaneSweepGpuTestContext context; context.Initialize();
         PlaneSweepGpu gpu;
         gpu.Initialize(context.m_device, context.m_physicalDevice, context.m_queue, context.m_commandPool, context.m_shaderFloat64Enabled);
@@ -144,6 +148,7 @@ int main(int argc, char **argv)
                 const bool tilt = variant.tilt;
                 setup.m_planeSweepMatchingMode = variant.mode;
                 setup.m_planeSweepPatchMatchTiltEnabled = tilt;
+                if (compareConfidence) setup.m_planeSweepConfidenceEnabled = std::string(variant.name) == "confidence_on";
                 SweepUtility::PlaneSweepDepthMap map;
                 PlaneSweepSlantedDiagnostics diagnostics;
                 std::vector<PlaneSweepPyramidStats> stats;
@@ -157,6 +162,14 @@ int main(int argc, char **argv)
                 const std::string stem = std::to_string(camera.m_imageId);
                 SaveArray(folder / (stem + ".depth.bin"), map.m_width, map.m_height, map.m_depthValues);
                 SaveArray(folder / (stem + ".cost.bin"), map.m_width, map.m_height, diagnostics.m_costs);
+                if (compareConfidence)
+                {
+                    SaveArray(folder / (stem + ".gap.bin"), map.m_width, map.m_height, diagnostics.m_confidenceGaps);
+                    std::vector<float> status;
+                    status.reserve(diagnostics.m_status.size());
+                    for (uint32_t value : diagnostics.m_status) status.push_back(static_cast<float>(value));
+                    SaveArray(folder / (stem + ".status.bin"), map.m_width, map.m_height, status);
+                }
                 size_t valid = 0;
                 float maximumSine = 0;
                 std::vector<float> angles;

@@ -27,6 +27,8 @@ namespace graphicsFX
     {
         std::vector<Float4> m_planes; //Winning k.xyz and weighted cost; before final rejection.
         std::vector<float> m_costs; //Final per-pixel costs, including rejected pixels.
+        std::vector<float> m_confidenceGaps; //Final local-depth cost gap, before confidence rejection.
+        std::vector<uint32_t> m_status; //Final shader acceptance/rejection status, for offline diagnostics.
     };
     static_assert(sizeof(PlaneSweepPyramidState) == 16, "Pyramid state must match GLSL vec4.");
 

@@ -91,6 +91,8 @@ int main(int argc, char **argv)
         setup.m_planeSweepCoarseToFineEnabled = false;
         setup.m_planeSweepPointStep = 2;
         resized.m_camera.m_position.x = (50.0f - float((20U * 101U) / 51U)) * 5.0f / 200.0f;
+        // Legacy floor sampling must align both axes: row 20 maps to image row 39, not 40.
+        resized.m_camera.m_position.y = (float((20U * 81U) / 41U) - 40.0f) * 5.0f / 200.0f;
         Require(Kept({ reference, resized }, setup), "Legacy sweep coordinates were interpreted as pyramid centers");
 
         // Pixel tolerance is measured at the reference depth-map resolution.
@@ -146,11 +148,28 @@ int main(int argc, char **argv)
                 std::ofstream out(file);
                 Require(bool(out), "Cannot create parser fixture");
                 out << "[COLMAP]\nPlaneSweepCrossViewReprojectionTolerancePixels=0.75\n"
-                    << "PlaneSweepCrossViewRelativeDepthTolerance=0.015\n";
+                    << "PlaneSweepCrossViewRelativeDepthTolerance=0.015\n"
+                    << "PlaneSweepCrossViewCorrectionEnabled=true\n"
+                    << "PlaneSweepBoundaryColorSelectionEnabled=true\n"
+                    << "PlaneSweepCrossViewCount=4\nPlaneSweepBoundaryColorViewCount=16\n";
             }
             const auto parsed = LoadProgramSetup(file.string()).m_colmap;
             Require(parsed.m_planeSweepCrossViewReprojectionTolerancePixels == 0.75f, "Pixel threshold was not parsed");
             Require(parsed.m_planeSweepCrossViewRelativeDepthTolerance == 0.015f, "Depth threshold was not parsed");
+            Require(parsed.m_planeSweepBoundaryColorSelectionEnabled, "Boundary color switch was not parsed");
+            Require(parsed.m_planeSweepCrossViewCorrectionEnabled, "Depth correction switch was not parsed");
+            Require(parsed.m_planeSweepBoundaryColorViewCount == 16 && parsed.m_planeSweepCrossViewCount == 4,
+                "Color and geometric camera limits were not parsed independently");
+            {
+                std::ofstream out(file);
+                out << "[COLMAP]\nPlaneSweepBoundaryColorSelectionEnabled=false\n";
+            }
+            Require(!LoadProgramSetup(file.string()).m_colmap.m_planeSweepBoundaryColorSelectionEnabled,
+                "Boundary color switch could not be disabled");
+            Require(LoadProgramSetup(file.string()).m_colmap.m_planeSweepBoundaryColorViewCount == 4,
+                "Omitted color camera count did not preserve the previous limit");
+            Require(!LoadProgramSetup(file.string()).m_colmap.m_planeSweepCrossViewCorrectionEnabled,
+                "Omitted depth correction switch must default to false");
         }
         std::cout << "Plane sweep round-trip consistency tests passed.\n";
         return 0;
