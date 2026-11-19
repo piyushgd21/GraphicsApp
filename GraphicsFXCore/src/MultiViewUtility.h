@@ -165,7 +165,7 @@ namespace graphicsFX
         std::size_t m_pointsRejectedConfidence{ 0U }; //Stores points rejected for ambiguous depth cost.
         std::size_t m_pointsRejectedCrossView{ 0U }; //Stores points rejected by depth-map consistency.
         std::size_t m_pointsBeforeFiltering{ 0U }; //Stores points before fusion and outlier filtering.
-        std::size_t m_pointsAfterFusion{ 0U }; //Stores points after voxel fusion.
+        std::size_t m_pointsAfterFusion{ 0U }; //Stores points after the selected fusion mode.
         std::size_t m_pointsAfterOutlierFilter{ 0U }; //Stores points after outlier filtering.
     };
 
@@ -529,6 +529,7 @@ namespace graphicsFX
                         std::size_t m_depthMapIndex{ 0U }; //Stores the originating depth map index.
                         Float3 m_position; //Stores the reconstructed world position.
                         Float4 m_color; //Stores the reference image color.
+                        uint32_t m_depthPixelIndex{ UINT32_MAX }; //Original map pixel, retained through filtering and correction.
                     };
 
                     //Stores one integer coordinate used by spatial filters.
@@ -693,7 +694,8 @@ namespace graphicsFX
                     static void BuildFilteredPoints(
                         const ColmapSetup &setup,
                         const std::vector<PlaneSweepPointCandidate> &pointCandidates,
-                        ColmapPlaneSweepResult &result
+                        ColmapPlaneSweepResult &result,
+                        const std::vector<PlaneSweepDepthMap> *depthMaps = nullptr
                     );
 
                     //Returns whether sparse points should define the depth range.

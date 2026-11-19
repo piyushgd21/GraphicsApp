@@ -158,6 +158,14 @@ namespace graphicsFX
         CpuGpuCompare
     };
 
+    enum class PlaneSweepFusionMode
+    {
+        Legacy, // Omitted selector: honor PlaneSweepPointFusionEnabled.
+        None,
+        Voxel,
+        Geometric
+    };
+
     inline const char *PlaneSweepExecutionModeName(PlaneSweepExecutionMode mode)
     {
         switch (mode)
@@ -223,6 +231,14 @@ namespace graphicsFX
         bool m_planeSweepBoundaryColorSelectionEnabled{ false }; //Optionally replaces boundary RGB using reliable interior observations.
         int m_planeSweepBoundaryColorViewCount{ 4 }; //Limits color-only camera search independently of geometric validation.
         bool m_planeSweepPointFusionEnabled{ true }; //Stores whether nearby points are fused into voxels.
+        PlaneSweepFusionMode m_planeSweepFusionMode{ PlaneSweepFusionMode::Legacy };
+
+        PlaneSweepFusionMode EffectiveFusionMode() const
+        {
+            return m_planeSweepFusionMode == PlaneSweepFusionMode::Legacy
+                ? (m_planeSweepPointFusionEnabled ? PlaneSweepFusionMode::Voxel : PlaneSweepFusionMode::None)
+                : m_planeSweepFusionMode;
+        }
         float m_planeSweepFusionVoxelSize{ 0.02f }; //Stores voxel size used to fuse plane sweep points.
         int m_planeSweepFusionMinimumObservations{ 2 }; //Stores minimum observations required for a fused voxel.
         bool m_planeSweepOutlierFilterEnabled{ true }; //Stores whether isolated points are removed.

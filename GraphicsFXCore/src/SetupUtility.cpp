@@ -832,6 +832,17 @@ namespace graphicsFX
         ApplyBool(values, "COLMAP.PLANESWEEPBOUNDARYCOLORSELECTIONENABLED", setup.m_colmap.m_planeSweepBoundaryColorSelectionEnabled);
         ApplyInt(values, "COLMAP.PLANESWEEPBOUNDARYCOLORVIEWCOUNT", setup.m_colmap.m_planeSweepBoundaryColorViewCount, 1, 128);
         ApplyBool(values, "COLMAP.PLANESWEEPPOINTFUSIONENABLED", setup.m_colmap.m_planeSweepPointFusionEnabled);
+        {
+            const auto found = values.find("COLMAP.PLANESWEEPFUSIONMODE");
+            if (found != values.end())
+            {
+                const auto mode = NormalizeName(found->second);
+                if (mode == "NONE") setup.m_colmap.m_planeSweepFusionMode = PlaneSweepFusionMode::None;
+                else if (mode == "VOXEL") setup.m_colmap.m_planeSweepFusionMode = PlaneSweepFusionMode::Voxel;
+                else if (mode == "GEOMETRIC") setup.m_colmap.m_planeSweepFusionMode = PlaneSweepFusionMode::Geometric;
+                else throw std::invalid_argument("PlaneSweepFusionMode must be None, Voxel or Geometric.");
+            }
+        }
         ApplyFloat(values, "COLMAP.PLANESWEEPFUSIONVOXELSIZE", setup.m_colmap.m_planeSweepFusionVoxelSize, 0.000001f, 1000000.0f);
         ApplyInt(values, "COLMAP.PLANESWEEPFUSIONMINIMUMOBSERVATIONS", setup.m_colmap.m_planeSweepFusionMinimumObservations, 1, 1000000);
         ApplyBool(values, "COLMAP.PLANESWEEPOUTLIERFILTERENABLED", setup.m_colmap.m_planeSweepOutlierFilterEnabled);

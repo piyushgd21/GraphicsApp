@@ -26,6 +26,8 @@ add_library(GraphicsFXCore STATIC
     GraphicsFXCore/include/PlaneSweepColorSelection.h
     GraphicsFXCore/src/PlaneSweepCrossViewCorrection.cpp
     GraphicsFXCore/include/PlaneSweepCrossViewCorrection.h
+    GraphicsFXCore/src/PlaneSweepGeometricFusion.cpp
+    GraphicsFXCore/include/PlaneSweepGeometricFusion.h
     GraphicsFXCore/src/PlaneSweepGpu.cpp
     GraphicsFXCore/src/PlaneSweepPyramid.cpp
     GraphicsFXCore/src/PlaneSweepPyramidGpu.cpp
@@ -142,6 +144,10 @@ if(BUILD_TESTING)
     target_link_libraries(PlaneSweepSlantedTests PRIVATE GraphicsFXCore)
     add_test(NAME PlaneSweepSlantedCpu COMMAND PlaneSweepSlantedTests)
     add_executable(PlaneSweepConsistencyTests Tests/PlaneSweepConsistencyTests.cpp)
+    add_executable(PlaneSweepGeometricFusionTests Tests/PlaneSweepGeometricFusionTests.cpp)
+    target_link_libraries(PlaneSweepGeometricFusionTests PRIVATE GraphicsFXCore)
+    add_test(NAME PlaneSweepGeometricFusion COMMAND PlaneSweepGeometricFusionTests
+        "${CMAKE_CURRENT_BINARY_DIR}/Testing/GeometricFusion")
     add_executable(PlaneSweepCrossViewCorrectionTests Tests/PlaneSweepCrossViewCorrectionTests.cpp)
     add_executable(PlaneSweepCrossViewCompare Tests/PlaneSweepCrossViewCompare.cpp)
     target_link_libraries(PlaneSweepCrossViewCompare PRIVATE GraphicsFXCore)

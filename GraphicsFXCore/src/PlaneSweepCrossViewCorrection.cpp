@@ -1,4 +1,5 @@
 #include "PlaneSweepCrossViewCorrection.h"
+#include "PlaneSweepGeometricFusion.h"
 
 #include <algorithm>
 #include <array>
@@ -12,7 +13,7 @@ namespace graphicsFX
     {
         using Sweep = MultiViewUtility::MultiViewPlaneSweepUtility;
         using Map = Sweep::PlaneSweepDepthMap;
-        struct Observation { float depth{}, score{}; bool usable{}; std::size_t camera{}; };
+        using Observation = PlaneSweepDepthObservation;
         struct Camera { std::size_t index; float score; };
         constexpr uint32_t NoCell = std::numeric_limits<uint32_t>::max();
         constexpr uint32_t DuplicateCell = NoCell - 1;
@@ -43,20 +44,6 @@ namespace graphicsFX
         {
             return pyramid ? (float(sample) + 0.5f) * float(imageSize) / float(mapSize) - 0.5f :
                 float((std::size_t(sample) * imageSize) / mapSize);
-        }
-        bool Bracket(float coordinate, uint32_t imageSize, uint32_t mapSize, bool pyramid,
-            int &a, int &b, float &weight)
-        {
-            const auto at = [&](int i) { return ImageCoordinate(i, imageSize, mapSize, pyramid); };
-            if (coordinate < at(0) - 1e-4f || coordinate > at(int(mapSize) - 1) + 1e-4f) return false;
-            a = std::clamp(int(std::floor(coordinate * float(mapSize) / float(imageSize))), 0, int(mapSize) - 1);
-            while (a > 0 && at(a) > coordinate + 1e-4f) --a;
-            while (a + 1 < int(mapSize) && at(a + 1) <= coordinate + 1e-4f) ++a;
-            if (std::fabs(coordinate - at(a)) <= 1e-4f) { b = a; weight = 0; return true; }
-            b = a + 1;
-            if (b >= int(mapSize) || at(b) <= at(a)) return false;
-            weight = std::clamp((coordinate - at(a)) / (at(b) - at(a)), 0.0f, 1.0f);
-            return true;
         }
         bool Observe(const ColmapSetup &s, const Map &ref, const Map &src, const Float3 &point,
             float refX, float refY, float refDepth, Observation &observation, bool interpolate = true)
@@ -107,31 +94,9 @@ namespace graphicsFX
 
             // Correction requires a valid footprint at the actual projection. Never infer a depth
             // from a nearby pixel across a hole. Inverse-depth interpolation preserves pinhole planes.
-            int x0{}, x1{}, y0{}, y1{}; float wx{}, wy{};
-            if (!Bracket(targetX, src.m_imageWidth, src.m_width, pyramid, x0, x1, wx) ||
-                !Bracket(targetY, src.m_imageHeight, src.m_height, pyramid, y0, y1, wy)) return true;
-            float inverse = 0, low = std::numeric_limits<float>::max(), high = 0;
-            for (int j = 0; j < 2; ++j)
-                for (int i = 0; i < 2; ++i)
-                {
-                    const float weight = (i ? wx : 1 - wx) * (j ? wy : 1 - wy);
-                    if (weight <= 0) continue;
-                    const float depth = src.m_depthValues[std::size_t(j ? y1 : y0) * src.m_width + (i ? x1 : x0)];
-                    if (!(depth > 0) || !std::isfinite(depth) || std::fabs(depth - projectedDepth) / projectedDepth > depthTolerance) return true;
-                    inverse += weight / depth; low = std::min(low, depth); high = std::max(high, depth);
-                }
-            if (!(inverse > 0) || high - low > 0.5f * depthTolerance * projectedDepth) return true;
-            float score{};
-            observation.usable = check(1 / inverse, targetX, targetY, observation.depth, score);
+            observation.usable = InterpolatePlaneSweepDepthObservation(s, ref, src, point, refX, refY, refDepth, observation);
             return true;
         }
-        float Median(std::vector<float> values)
-        {
-            std::sort(values.begin(), values.end());
-            const auto n = values.size();
-            return n % 2 ? values[n / 2] : (values[n / 2 - 1] + values[n / 2]) * 0.5f;
-        }
-
         double SmallMedian(std::array<double, 24> values, int count)
         {
             std::sort(values.begin(), values.begin() + count);
@@ -356,7 +321,7 @@ namespace graphicsFX
             else ++stats.m_insufficientSupport;
         }
         std::vector<Observation> before, after;
-        std::vector<float> depths, deviations;
+        std::vector<float> depths;
         for (std::size_t r = 0; r < maps.size(); ++r)
         {
             if (groups[r].empty()) continue;
@@ -429,21 +394,9 @@ namespace graphicsFX
                 float consensusDepth = z;
                 if (depths.size() >= consensusMinimum)
                 {
-                    const float center = Median(depths);
-                    deviations.clear();
-                    for (float depth : depths) deviations.push_back(std::fabs(depth - center));
-                    const float scale = std::max(epsilon, 1.4826f * Median(deviations));
-                    double sum = z, weightSum = 1;
-                    std::size_t inliers = 0;
-                    for (const auto &o : before)
-                    {
-                        const float residual = std::fabs(o.depth - center);
-                        if (!o.usable || residual > 3 * scale) continue;
-                        const double weight = std::min(1.0, double(scale) / std::max(double(residual), double(epsilon))) / (1.0 + o.score);
-                        sum += weight * o.depth; weightSum += weight; ++inliers;
-                    }
-                    consensus = inliers >= consensusMinimum;
-                    if (consensus) consensusDepth = float(sum / weightSum);
+                    const auto estimate = EstimatePlaneSweepDepthConsensus(z, before, consensusMinimum);
+                    consensus = estimate.valid;
+                    if (consensus) consensusDepth = estimate.depth;
                 }
                 if (!regularize && !consensus)
                 { ++stats.m_insufficientSupport; continue; }

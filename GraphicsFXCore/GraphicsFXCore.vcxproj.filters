@@ -110,6 +110,9 @@
     <ClCompile Include="src\PlaneSweepCrossViewCorrection.cpp">
       <Filter>Source Files\Utilities</Filter>
     </ClCompile>
+    <ClCompile Include="src\PlaneSweepGeometricFusion.cpp">
+      <Filter>Source Files\Utilities</Filter>
+    </ClCompile>
     <ClCompile Include="src\PlaneSweepPyramidGpu.cpp">
       <Filter>Source Files\Utilities</Filter>
     </ClCompile>
@@ -215,6 +218,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="include\PlaneSweepCrossViewCorrection.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\PlaneSweepGeometricFusion.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

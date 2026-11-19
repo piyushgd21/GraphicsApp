@@ -91,6 +91,7 @@
     <ClCompile Include="src\PlaneSweepSlanted.cpp" />
     <ClCompile Include="src\PlaneSweepColorSelection.cpp" />
     <ClCompile Include="src\PlaneSweepCrossViewCorrection.cpp" />
+    <ClCompile Include="src\PlaneSweepGeometricFusion.cpp" />
     <ClCompile Include="src\PlaneSweepPyramidGpu.cpp" />
     <ClCompile Include="src\SceneObject.cpp" />
     <ClCompile Include="src\SetupUtility.cpp" />
@@ -107,6 +108,7 @@
     <ClInclude Include="include\PlaneSweepPyramid.h" />
     <ClInclude Include="include\PlaneSweepColorSelection.h" />
     <ClInclude Include="include\PlaneSweepCrossViewCorrection.h" />
+    <ClInclude Include="include\PlaneSweepGeometricFusion.h" />
     <ClInclude Include="src\Camera.h" />
     <ClInclude Include="src\EngineCore.h" />
     <ClInclude Include="src\GaussianSplatStreamLoader.h" />

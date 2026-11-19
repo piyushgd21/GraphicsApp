@@ -80,6 +80,7 @@ static void RealScene(PlaneSweepGpu &gpu, const char *configuration)
     setup.m_planeSweepPointStep = 1; // Equal dense output grids for the comparison.
     setup.m_planeSweepCrossViewConsistencyEnabled = false;
     setup.m_planeSweepPointFusionEnabled = false; setup.m_planeSweepOutlierFilterEnabled = false;
+    setup.m_planeSweepFusionMode = PlaneSweepFusionMode::None;
     setup.m_planeSweepExperimentMode = false; setup.m_planeSweepDebugEnabled = false;
     for (bool pyramid : { true, false })
     {

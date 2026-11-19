@@ -13,6 +13,7 @@
 #include "PlaneSweepPyramid.h"
 #include "PlaneSweepColorSelection.h"
 #include "PlaneSweepCrossViewCorrection.h"
+#include "PlaneSweepGeometricFusion.h"
 
 #include "PathUtility.h"
 #include "StringUtility.h"
@@ -3211,7 +3212,8 @@ namespace graphicsFX
                     }
 
                     const Float3 position = MultiViewUtility::MultiViewPlaneSweepUtility::UnprojectPixel(referenceImage.m_camera, referenceImage.m_intrinsic, referenceX, referenceY, depth);
-                    pointCandidates.push_back(MultiViewUtility::MultiViewPlaneSweepUtility::PlaneSweepPointCandidate{ depthMapIndex, position, referenceColor });
+                    pointCandidates.push_back(MultiViewUtility::MultiViewPlaneSweepUtility::PlaneSweepPointCandidate{
+                        depthMapIndex, position, referenceColor, static_cast<uint32_t>(depthIndex) });
                 }
             }
         }
@@ -3382,44 +3384,18 @@ namespace graphicsFX
         )
         {
             // Note: metrics timing is collected by the caller for cross-view step if requested.
-            if (!setup.m_planeSweepCrossViewConsistencyEnabled || pointCandidates.empty())
+            const bool geometricFusion = setup.EffectiveFusionMode() == PlaneSweepFusionMode::Geometric;
+            if ((!setup.m_planeSweepCrossViewConsistencyEnabled && !geometricFusion) || pointCandidates.empty())
             {
                 return;
             }
 
-            const std::size_t comparisonCount = static_cast<std::size_t>(std::max(1, setup.m_planeSweepCrossViewCount));
             const int minimumViews = std::max(1, setup.m_planeSweepCrossViewMinimumViews);
             const float depthTolerance = std::max(0.0f, setup.m_planeSweepCrossViewRelativeDepthTolerance);
             const float pixelTolerance = std::max(0.0f, setup.m_planeSweepCrossViewReprojectionTolerancePixels);
-            const float pixelToleranceSquared = pixelTolerance * pixelTolerance;
-            const int sampleRadius = std::max(1, setup.m_planeSweepPointStep);
-            const auto validDepthMap = [](const PlaneSweepDepthMap &map)
-            {
-                return map.m_width > 0U && map.m_height > 0U && map.m_imageWidth > 0U && map.m_imageHeight > 0U &&
-                    map.m_intrinsic.m_fx > 0.0 && map.m_intrinsic.m_fy > 0.0 &&
-                    std::isfinite(map.m_intrinsic.m_fx) && std::isfinite(map.m_intrinsic.m_fy) &&
-                    map.m_depthValues.size() == static_cast<std::size_t>(map.m_width) * map.m_height;
-            };
 
             // Camera ranking is independent of the point. Reuse it across all points in each reference.
-            std::vector<std::vector<PlaneSweepSourceCandidate>> comparisonCandidatesByReference(depthMaps.size());
-            for (std::size_t referenceIndex = 0U; referenceIndex < depthMaps.size(); ++referenceIndex)
-            {
-                const PlaneSweepDepthMap &reference = depthMaps[referenceIndex];
-                auto &candidates = comparisonCandidatesByReference[referenceIndex];
-                for (std::size_t index = 0U; index < depthMaps.size(); ++index)
-                {
-                    if (index == referenceIndex || !validDepthMap(depthMaps[index])) continue;
-                    const PlaneSweepDepthMap &comparison = depthMaps[index];
-                    const float distance = length(comparison.m_camera.m_position - reference.m_camera.m_position);
-                    const float alignment = std::max(0.0f, dot(reference.m_camera.m_forward, comparison.m_camera.m_forward));
-                    candidates.push_back(PlaneSweepSourceCandidate{ index, 0U, distance / (0.25f + alignment) });
-                }
-                std::sort(candidates.begin(), candidates.end(), [](const PlaneSweepSourceCandidate &a, const PlaneSweepSourceCandidate &b)
-                {
-                    return a.m_score < b.m_score;
-                });
-            }
+            const auto comparisonCandidatesByReference = PlaneSweepComparisonViews(setup, depthMaps);
             std::vector<PlaneSweepPointCandidate> consistentCandidates;
             consistentCandidates.reserve(pointCandidates.size());
 
@@ -3433,77 +3409,22 @@ namespace graphicsFX
 
                 const PlaneSweepDepthMap &referenceDepthMap = depthMaps[pointCandidate.m_depthMapIndex];
                 float referenceX = 0.0f, referenceY = 0.0f, referenceDepth = 0.0f;
-                if (!validDepthMap(referenceDepthMap) ||
+                if (!ValidPlaneSweepDepthMap(referenceDepthMap) ||
                     !ProjectPoint(referenceDepthMap.m_camera, referenceDepthMap.m_intrinsic, pointCandidate.m_position,
                         referenceX, referenceY, referenceDepth))
                 {
                     ++result.m_pointsRejectedCrossView;
                     continue;
                 }
-                const float referencePixelScaleX = float(referenceDepthMap.m_width) / float(referenceDepthMap.m_imageWidth);
-                const float referencePixelScaleY = float(referenceDepthMap.m_height) / float(referenceDepthMap.m_imageHeight);
                 const auto &comparisonCandidates = comparisonCandidatesByReference[pointCandidate.m_depthMapIndex];
                 int agreeingViews = 0;
-                const std::size_t candidateCount = std::min(comparisonCount, comparisonCandidates.size());
+                const std::size_t candidateCount = comparisonCandidates.size();
                 for (std::size_t candidateIndex = 0U; candidateIndex < candidateCount; ++candidateIndex)
                 {
-                    const PlaneSweepDepthMap &comparisonDepthMap = depthMaps[comparisonCandidates[candidateIndex].m_cameraIndex];
-                    float x = 0.0f;
-                    float y = 0.0f;
-                    float projectedDepth = 0.0f;
-                    const bool projected = ProjectPoint(comparisonDepthMap.m_camera, comparisonDepthMap.m_intrinsic, pointCandidate.m_position, x, y, projectedDepth);
-                    if (setup.m_planeSweepCoarseToFineEnabled) { x -= 0.5f; y -= 0.5f; }
-                    if (!projected ||
-                        x < 0.0f || y < 0.0f || x >= static_cast<float>(comparisonDepthMap.m_imageWidth) || y >= static_cast<float>(comparisonDepthMap.m_imageHeight))
-                    {
-                        continue;
-                    }
-
-                    const int centerX = setup.m_planeSweepCoarseToFineEnabled ? int(std::lround((x + 0.5f) * float(comparisonDepthMap.m_width) / float(comparisonDepthMap.m_imageWidth) - 0.5f)) : static_cast<int>(std::lround((x / static_cast<float>(std::max(1U, comparisonDepthMap.m_imageWidth))) * comparisonDepthMap.m_width));
-                    const int centerY = setup.m_planeSweepCoarseToFineEnabled ? int(std::lround((y + 0.5f) * float(comparisonDepthMap.m_height) / float(comparisonDepthMap.m_imageHeight) - 0.5f)) : static_cast<int>(std::lround((y / static_cast<float>(std::max(1U, comparisonDepthMap.m_imageHeight))) * comparisonDepthMap.m_height));
-                    bool agrees = false;
-                    for (int sampleY = centerY - sampleRadius; sampleY <= centerY + sampleRadius && !agrees; ++sampleY)
-                    {
-                        for (int sampleX = centerX - sampleRadius; sampleX <= centerX + sampleRadius; ++sampleX)
-                        {
-                            if (sampleX < 0 || sampleY < 0 || sampleX >= static_cast<int>(comparisonDepthMap.m_width) || sampleY >= static_cast<int>(comparisonDepthMap.m_height))
-                            {
-                                continue;
-                            }
-
-                            const float comparisonDepth = comparisonDepthMap.m_depthValues[(static_cast<std::size_t>(sampleY) * comparisonDepthMap.m_width) + static_cast<uint32_t>(sampleX)];
-                            if (!std::isfinite(comparisonDepth) || comparisonDepth <= 0.0f)
-                            {
-                                continue;
-                            }
-
-                            if (std::fabs(projectedDepth - comparisonDepth) / projectedDepth > depthTolerance) continue;
-
-                            // Reconstruct the supporting sample at exactly the pixel used to create its depth.
-                            const float sampleImageX = setup.m_planeSweepCoarseToFineEnabled
-                                ? (float(sampleX) + 0.5f) * float(comparisonDepthMap.m_imageWidth) / float(comparisonDepthMap.m_width) - 0.5f
-                                : float((static_cast<std::size_t>(sampleX) * comparisonDepthMap.m_imageWidth) / comparisonDepthMap.m_width);
-                            const float sampleImageY = setup.m_planeSweepCoarseToFineEnabled
-                                ? (float(sampleY) + 0.5f) * float(comparisonDepthMap.m_imageHeight) / float(comparisonDepthMap.m_height) - 0.5f
-                                : float((static_cast<std::size_t>(sampleY) * comparisonDepthMap.m_imageHeight) / comparisonDepthMap.m_height);
-                            const Float3 supportingPoint = UnprojectPixel(comparisonDepthMap.m_camera, comparisonDepthMap.m_intrinsic,
-                                sampleImageX, sampleImageY, comparisonDepth);
-                            float returnedX = 0.0f, returnedY = 0.0f, returnedDepth = 0.0f;
-                            if (!ProjectPoint(referenceDepthMap.m_camera, referenceDepthMap.m_intrinsic, supportingPoint,
-                                returnedX, returnedY, returnedDepth)) continue;
-                            if (std::fabs(returnedDepth - referenceDepth) / referenceDepth > depthTolerance) continue;
-
-                            const float errorX = (returnedX - referenceX) * referencePixelScaleX;
-                            const float errorY = (returnedY - referenceY) * referencePixelScaleY;
-                            if (errorX * errorX + errorY * errorY <= pixelToleranceSquared)
-                            {
-                                agrees = true;
-                                break;
-                            }
-                        }
-                    }
-
-                    if (agrees) ++agreeingViews;
+                    const PlaneSweepDepthMap &comparisonDepthMap = depthMaps[comparisonCandidates[candidateIndex]];
+                    PlaneSweepDepthObservation observation;
+                    if (FindPlaneSweepDepthObservation(setup, referenceDepthMap, comparisonDepthMap,
+                        pointCandidate.m_position, referenceX, referenceY, referenceDepth, observation, false)) ++agreeingViews;
                     if (agreeingViews >= minimumViews) break;
                 }
 
@@ -3522,7 +3443,7 @@ namespace graphicsFX
                 ", pixel tolerance=" + std::to_string(pixelTolerance) + " depth-map pixels, minimum views=" +
                 std::to_string(minimumViews) + ".\n");
             pointCandidates = std::move(consistentCandidates);
-            if (setup.m_planeSweepCrossViewCorrectionEnabled)
+            if (setup.m_planeSweepCrossViewCorrectionEnabled && !geometricFusion)
             {
                 const auto corrected = CorrectPlaneSweepCrossViewDepths(setup, depthMaps, pointCandidates);
                 UIUtility::Print("Cross-view depth correction: corrected " + std::to_string(corrected.m_corrected) +
@@ -3550,13 +3471,26 @@ namespace graphicsFX
         void MultiViewUtility::MultiViewPlaneSweepUtility::BuildFilteredPoints(
             const ColmapSetup &setup,
             const std::vector<PlaneSweepPointCandidate> &pointCandidates,
-            ColmapPlaneSweepResult &result
+            ColmapPlaneSweepResult &result,
+            const std::vector<PlaneSweepDepthMap> *depthMaps
         )
         {
             result.m_pointsBeforeFiltering = pointCandidates.size();
             std::vector<SceneObjectPointCloudPoint> points;
 
-            if (setup.m_planeSweepPointFusionEnabled)
+            const auto fusionMode = setup.EffectiveFusionMode();
+            if (fusionMode == PlaneSweepFusionMode::Geometric)
+            {
+                if (!depthMaps) throw std::invalid_argument("Geometric fusion requires the reference depth maps.");
+                PlaneSweepGeometricFusionStats statistics;
+                points = FusePlaneSweepGeometricPoints(setup, *depthMaps, pointCandidates, statistics);
+                UIUtility::Print("Geometric fusion: emitted " + std::to_string(points.size()) + " / " +
+                    std::to_string(pointCandidates.size()) + ", consolidated observations=" + std::to_string(statistics.merged) +
+                    ", moved representatives=" + std::to_string(statistics.moved) + ", retained without a new group=" +
+                    std::to_string(statistics.unmerged) + ", ambiguous groups=" + std::to_string(statistics.ambiguous) +
+                    ". Shared cross-view limits; seed RGBA preserved.\n");
+            }
+            else if (fusionMode == PlaneSweepFusionMode::Voxel)
             {
                 const float voxelSize = std::max(0.000001f, setup.m_planeSweepFusionVoxelSize);
                 const std::size_t minimumObservations = static_cast<std::size_t>(std::max(1, setup.m_planeSweepFusionMinimumObservations));
@@ -4345,7 +4279,8 @@ namespace graphicsFX
                     if (MultiViewPlaneSweepUtility::SaveDepthOutput(setup, referenceImage.m_camera,
                         pyramidMap.m_depthValues, pyramidMap.m_width, pyramidMap.m_height)) ++result.m_depthFilesSaved;
                     ++result.m_referenceImagesProcessed;
-                    if (setup.m_planeSweepCrossViewConsistencyEnabled || setup.m_planeSweepBoundaryColorSelectionEnabled)
+                    if (setup.m_planeSweepCrossViewConsistencyEnabled || setup.m_planeSweepBoundaryColorSelectionEnabled ||
+                        setup.EffectiveFusionMode() == PlaneSweepFusionMode::Geometric)
                         depthMaps.push_back(std::move(pyramidMap));
                     continue;
                 }
@@ -4528,7 +4463,8 @@ namespace graphicsFX
                     }
                 }
 
-                if (setup.m_planeSweepCrossViewConsistencyEnabled || setup.m_planeSweepBoundaryColorSelectionEnabled)
+                if (setup.m_planeSweepCrossViewConsistencyEnabled || setup.m_planeSweepBoundaryColorSelectionEnabled ||
+                    setup.EffectiveFusionMode() == PlaneSweepFusionMode::Geometric)
                 {
                     depthMaps.push_back(std::move(depthMap));
                 }
@@ -4641,7 +4577,7 @@ namespace graphicsFX
 
                 const auto bfStart = std::chrono::steady_clock::now();
                 selectBoundaryColors();
-                MultiViewPlaneSweepUtility::BuildFilteredPoints(setup, pointCandidates, result);
+                MultiViewPlaneSweepUtility::BuildFilteredPoints(setup, pointCandidates, result, &depthMaps);
                 const auto bfEnd = std::chrono::steady_clock::now();
                 metricsPtr->m_filteringMs += std::chrono::duration<double, std::milli>(bfEnd - bfStart).count();
             }
@@ -4649,7 +4585,7 @@ namespace graphicsFX
             {
                 MultiViewPlaneSweepUtility::ApplyCrossViewConsistency(setup, depthMaps, pointCandidates, result);
                 selectBoundaryColors();
-                MultiViewPlaneSweepUtility::BuildFilteredPoints(setup, pointCandidates, result);
+                MultiViewPlaneSweepUtility::BuildFilteredPoints(setup, pointCandidates, result, &depthMaps);
             }
 
             //Reports the plane-sweep reconstruction totals.

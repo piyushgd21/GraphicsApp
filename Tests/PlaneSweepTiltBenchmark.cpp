@@ -68,6 +68,7 @@ int main(int argc, char **argv)
         // Preserve raw per-view depths. Identical geometric checks are evaluated offline for both arms.
         setup.m_planeSweepCrossViewConsistencyEnabled = false;
         setup.m_planeSweepPointFusionEnabled = setup.m_planeSweepOutlierFilterEnabled = false;
+        setup.m_planeSweepFusionMode = PlaneSweepFusionMode::None;
         ValidatePlaneSweepSlantedSetup(setup);
         const auto cameras = MultiViewUtility::LoadColmapCameras(setup);
         if (cameras.m_cameras.empty()) throw std::runtime_error("House cameras are unavailable.");
